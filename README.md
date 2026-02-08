@@ -1,5 +1,10 @@
 # pdf2md-claude
 
+[![CI](https://github.com/hacker-cb/pdf2md-claude/actions/workflows/ci.yml/badge.svg)](https://github.com/hacker-cb/pdf2md-claude/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/pdf2md-claude)](https://pypi.org/project/pdf2md-claude/)
+[![Python](https://img.shields.io/pypi/pyversions/pdf2md-claude)](https://pypi.org/project/pdf2md-claude/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Convert PDF documents to high-quality Markdown using Claude's native PDF API.
 Handles large documents via chunked conversion with context passing, deterministic
 merging, and output validation. Preserves tables, formulas, figures, and document structure.
