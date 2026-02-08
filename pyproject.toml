@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2md-claude"
+version = "0.1.0"
+description = "Convert PDF documents to Markdown using Claude's native PDF API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    {name = "Pavel Sokolov", email = "pavel@sokolov.me"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
+dependencies = [
+    "anthropic>=0.40",
+    "pymupdf>=1.24",
+    "colorlog>=6.0",
+    "httpx[socks]>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/hacker-cb/pdf2md-claude"
+Repository = "https://github.com/hacker-cb/pdf2md-claude"
+Issues = "https://github.com/hacker-cb/pdf2md-claude/issues"
+
+[project.scripts]
+pdf2md-claude = "pdf2md_claude.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pdf2md_claude*"]

@@ -1,0 +1,291 @@
+"""Prompts for Claude PDF → Markdown conversion.
+
+Marker examples (``PAGE_BEGIN.example``, ``PAGE_END.example``) are
+injected from :mod:`pdf2md_claude.markers` so that prompt text and
+code always reference the same marker format.
+"""
+
+from pdf2md_claude.markers import (
+    IMAGE_AI_GENERATED_DESCRIPTION_BEGIN_MARKER,
+    IMAGE_AI_GENERATED_DESCRIPTION_END_MARKER,
+    IMAGE_BEGIN_MARKER,
+    IMAGE_END_MARKER,
+    IMAGE_RECT_EXAMPLE,
+    PAGE_BEGIN,
+    PAGE_END,
+    PAGE_SKIP_MARKER,
+    TABLE_CONTINUE_MARKER,
+)
+
+# Short aliases for readability inside prompt strings.
+_PB = PAGE_BEGIN.example  # <!-- PDF_PAGE_BEGIN N -->
+_PE = PAGE_END.example  # <!-- PDF_PAGE_END N -->
+_PS = PAGE_SKIP_MARKER  # <!-- PDF_PAGE_SKIP -->
+_TC = TABLE_CONTINUE_MARKER  # <!-- TABLE_CONTINUE -->
+_IB = IMAGE_BEGIN_MARKER  # <!-- IMAGE_BEGIN -->
+_IE = IMAGE_END_MARKER  # <!-- IMAGE_END -->
+_IDB = IMAGE_AI_GENERATED_DESCRIPTION_BEGIN_MARKER
+_IDE = IMAGE_AI_GENERATED_DESCRIPTION_END_MARKER
+_IR = IMAGE_RECT_EXAMPLE  # <!-- IMAGE_RECT 0.02,0.15,0.98,0.65 -->
+
+# ---------------------------------------------------------------------------
+# System prompt — individual rule definitions
+# ---------------------------------------------------------------------------
+
+_PREAMBLE = (
+    "You are a precise document converter. "
+    "Convert the provided PDF pages to clean, well-structured Markdown. "
+    "Follow these rules strictly:"
+)
+
+# ---- Global principles (mindset before content) ----
+
+# Rule 1 — Content fidelity
+_RULE_FIDELITY = """\
+**Content fidelity** (CRITICAL): Do NOT summarize, paraphrase, or omit any \
+content. Every paragraph, table, image, note, warning, and \
+footnote must appear in the output exactly as in the source.
+   - NEVER insert text that does not exist in the source document. Do not \
+add editorial notes, summaries of omitted content, or "presented as summary \
+references" placeholders. If you cannot fit all content, output what you can \
+and stop -- do NOT substitute summaries for actual content.
+   - **NEVER extrapolate from a Table of Contents**: If the pages you are \
+processing contain a Table of Contents listing sections on later pages, \
+do NOT generate content for those sections. Only convert content that is \
+visually present on each specific PDF page. If the real content ends \
+before the last page in your range, STOP — do NOT fabricate text for \
+sections you can see in the TOC but that are not on the pages provided. \
+Each page's markdown must correspond to what is actually printed on that \
+physical page."""
+
+# Rule 2 — Inline formatting (applies to ALL output)
+_RULE_FORMATTING = """\
+**Inline formatting** (applies everywhere — body text AND tables):
+   - Superscripts: ALWAYS use `<sup>`, not Unicode superscript characters \
+(e.g., write `a<sup>2</sup>` not `a²`). This ensures full character \
+coverage and consistent rendering.
+   - Subscripts: ALWAYS use `<sub>`, not Unicode subscript characters \
+(e.g., write `H<sub>2</sub>O` not `H₂O`).
+   - Dashes: use an en-dash `–` for numeric ranges and list bullets; \
+use a hyphen `-` only in compound words.
+   - Italics in body text: use Markdown `*text*`. Inside HTML tables: \
+use `<em>text</em>`."""
+
+# Rule 3 — Skip elements
+_RULE_SKIP = f"""\
+**Skip**: Page headers, page footers, page numbers, watermarks, and \
+copyright/license lines. Do NOT include the Table of Contents \
+(it references printable page numbers which are meaningless in markdown).
+   - **CRITICAL**: When you skip a page's content, you MUST still emit \
+the page markers for that page. Place `{_PS}` between the begin/end \
+markers to signal the skip is intentional:
+   ```
+   {PAGE_BEGIN.format(9)}
+   {_PS}
+   {PAGE_END.format(9)}
+   ```
+   This preserves correct page numbering. NEVER silently omit page \
+markers — every page in the range must have a begin/end pair."""
+
+# ---- Content types (structure, then specific elements) ----
+
+# Rule 4 — Headings
+_RULE_HEADINGS = """\
+**Headings**: Preserve the document's section numbering and hierarchy. \
+Map the document's heading depth to Markdown levels: `#` for the document title, \
+`##` for top-level sections (e.g. "11 Definition of commands"), \
+`###` for subsections (e.g. "11.2 Overview sheets"), \
+`####` for sub-subsections (e.g. "11.2.1 General"), \
+`#####` for deeper levels (e.g. "9.2.2.2 Standby"). \
+Count the dot-separated numbers to determine depth."""
+
+# Rule 5 — Tables
+_RULE_TABLES = f"""\
+**Tables**: ALWAYS use HTML `<table>` format for ALL tables, even simple ones.
+   - Use `<thead>` for header rows and `<tbody>` for data rows.
+   - Use `<th>` for header cells and `<td>` for data cells.
+   - Use `rowspan` and `colspan` for merged cells.
+   - **Faithful structure** (CRITICAL): Reproduce the EXACT row and cell layout \
+of the original table. If the PDF shows 3 header rows, output 3 `<tr>` rows in \
+`<thead>` — do NOT collapse multiple header rows into one row. Preserve every \
+blank/empty cell as an empty `<td></td>` or `<th></th>`. Keep empty separator \
+rows as `<tr><td colspan="..."></td></tr>` — do NOT remove them. Use `rowspan` \
+for cells that visually span multiple rows in the original.
+   - Preserve checkmarks (use ✓), footnote markers (a, b, c, etc.), and ALL \
+special symbols exactly as they appear.
+   - Column-count consistency: ensure the total column count is IDENTICAL for \
+every row. A cell with colspan="3" counts as 3. A cell with rowspan="N" \
+in row R occupies that column in rows R through R+N-1. Verify your column \
+math before outputting the table.
+   - **Completeness** (CRITICAL): You MUST convert EVERY table completely, \
+no matter how large or complex. NEVER replace a table with a summary, \
+description, or "see below" reference. If a table has 100 rows, output all \
+100 rows.
+   - Inside tables use `<em>` (not `<i>`) for italics, and `<br>` (single, \
+not double `<br><br>`) for line breaks within cells.
+   - **Continued tables**: If a table on the current page is a continuation \
+of a table from a previous page (the PDF shows "(continued)" in the header, \
+or the table has the same column structure and title as one from a prior \
+page), emit `{_TC}` on its own line immediately BEFORE the table title \
+or `<table>` tag. Still output the full table including its repeated headers \
+exactly as they appear in the PDF — the marker is metadata for post-processing."""
+
+# Rule 6 — Formulas
+_RULE_FORMULAS = """\
+**Formulas**: Preserve mathematical formulas using LaTeX notation in `$$` \
+blocks. Inline formulas use `$...$`."""
+
+# Rule 7 — Images (diagrams, figures, charts, illustrations)
+_RULE_IMAGES = f"""\
+**Images** (diagrams, figures, charts, illustrations): Wrap every image in \
+structured markers with a bounding box and a detailed description. \
+Do NOT output `![...](...)` references — image files are generated \
+automatically in post-processing.
+   - Wrap the entire image block with `{_IB}` and `{_IE}` markers.
+   - **Bounding box**: Immediately after `{_IB}`, emit an `IMAGE_RECT` \
+marker with normalized coordinates (0.0–1.0, origin at top-left): \
+`<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->`. Example: `{_IR}`.
+   - **Bounding box scope** (CRITICAL): The box must cover ONLY the visual \
+content (diagram, chart, photo, illustration). Do NOT include the figure \
+caption, figure number label, or surrounding body text — only the \
+graphical region.
+   - **Caption**: Preserve the original caption exactly as it appears in \
+the PDF (e.g., "Figure 5 – Timing diagram") as a `**bold**` line inside \
+the image block.
+   - **Description**: Wrap with `{_IDB}` and `{_IDE}` markers. Inside, \
+output a blockquote (`> ...`) with a thorough description: all labeled \
+elements, axes, values, arrows, connections, states, transitions, and \
+spatial relationships. Include enough detail that a reader who cannot see \
+the image can fully understand it.
+   - **Flowcharts / state diagrams**: Convert to Mermaid code blocks \
+(```mermaid ... ```) when the structure is clear enough to reproduce. \
+Place inside the description markers; still include a brief blockquote \
+summary below the Mermaid block.
+   - **No content extraction from figures**: Content visible inside a figure \
+(e.g., tables in screenshots, text in diagrams, code in panels) must NOT \
+be reproduced as standalone text, tables, or code blocks outside the image \
+block. The figure is already captured by its bounding box and AI \
+description. Only convert content that exists as first-class document \
+content on the page.
+   - Example structure:
+   ```
+   {_IB}
+   {_IR}
+   **Figure 5 – Timing diagram for forward frame**
+   {_IDB}
+   > The diagram shows a timing waveform with two signal lines...
+   {_IDE}
+   {_IE}
+   ```"""
+
+# ---- Infrastructure / meta ----
+
+# Rule 8 — Page markers
+_RULE_PAGE_MARKERS = f"""\
+**Page markers** (CRITICAL): You MUST wrap EVERY page's content with a pair \
+of markers: `{_PB}` at the start and `{_PE}` at the end. \
+Emit these for EVERY page in the specified range, even if a page is blank, \
+contains only images, or its content is skipped (e.g., Table of Contents). \
+For skipped pages, place `{_PS}` between the markers (see rule 3). \
+N is the original document page number — the correct page range will be \
+specified in the conversion instructions. \
+Missing page markers are treated as conversion errors. Example structure:
+   ```
+   {PAGE_BEGIN.format(5)}
+   ...page 5 content...
+   {PAGE_END.format(5)}
+   {PAGE_BEGIN.format(6)}
+   {_PS}
+   {PAGE_END.format(6)}
+   {PAGE_BEGIN.format(7)}
+   ...page 7 content...
+   {PAGE_END.format(7)}
+   ```"""
+
+# Rule 9 — Output format
+_RULE_OUTPUT = """\
+**Output**: Raw markdown only. No commentary, no wrapper text, no \
+"Here is the markdown" preamble. Start directly with the first content \
+heading."""
+
+
+# Ordered rule list — auto-numbered when building the system prompt.
+# Ordering: global principles → content types → infrastructure/meta.
+_RULES: list[str] = [
+    _RULE_FIDELITY,       # 1. mindset: don't summarize/fabricate
+    _RULE_FORMATTING,     # 2. style: sup/sub, dashes, italics
+    _RULE_SKIP,           # 3. exclusions: headers/footers/TOC
+    _RULE_HEADINGS,       # 4. structure: section hierarchy
+    _RULE_TABLES,         # 5. content: table format (most complex)
+    _RULE_FORMULAS,       # 6. content: math notation
+    _RULE_IMAGES,         # 7. content: images (diagrams/figures/charts)
+    _RULE_PAGE_MARKERS,   # 8. infra: page boundary markers
+    _RULE_OUTPUT,         # 9. meta: raw output, no commentary
+]
+
+
+def _build_system_prompt(rules: list[str]) -> str:
+    """Assemble rules into a numbered system prompt.
+
+    Each rule is prefixed with its 1-based index (``1. ...``, ``2. ...``)
+    and joined with blank lines.
+    """
+    numbered = [f"{i}. {rule}" for i, rule in enumerate(rules, 1)]
+    return _PREAMBLE + "\n\n" + "\n\n".join(numbered)
+
+
+SYSTEM_PROMPT = _build_system_prompt(_RULES)
+
+
+# ---------------------------------------------------------------------------
+# Context notes (per-chunk position)
+# ---------------------------------------------------------------------------
+
+CONTEXT_NOTE_START = (
+    "This is the START of the document. Begin with an H1 heading "
+    "containing the full official document title as it appears on "
+    "the title page."
+)
+
+CONTEXT_NOTE_MIDDLE = (
+    "This is a MIDDLE section. Continue from where the "
+    "previous chunk ended."
+)
+
+CONTEXT_NOTE_END = (
+    "This is the END of the document. Include all remaining "
+    "content up to and including the Bibliography."
+)
+
+PREVIOUS_CONTEXT_BLOCK = (
+    "The previous chunk ended with this content "
+    "(for continuity — do NOT repeat it):\n"
+    "<previous_context>\n"
+    "{prev_context}\n"
+    "</previous_context>"
+)
+
+
+# ---------------------------------------------------------------------------
+# Chunk conversion prompt
+# ---------------------------------------------------------------------------
+
+# NOTE: Double braces {{...}} are literal braces after f-string evaluation;
+# they become {chunk_num} etc. for later .format() calls at runtime.
+CONVERT_CHUNK_PROMPT = f"""\
+This is part {{chunk_num}} of {{total_chunks}} of a larger document. \
+Convert these PDF pages to Markdown following the system instructions.
+
+{{context_note}}
+
+IMPORTANT: These PDF pages correspond to pages {{page_start}} through \
+{{page_end}} of the original document ({{page_count}} pages). Wrap each \
+page's content with `{_PB}` and `{_PE}` markers using the original page \
+numbers: the first page of this chunk is page {{page_start}}, the next is \
+page {{page_start_plus_1}}, and so on sequentially. You MUST emit exactly \
+{{page_count}} begin/end marker pairs, one pair for each page from \
+{{page_start}} to {{page_end}}.
+
+{{previous_context_block}}
+
+Output ONLY the markdown content."""

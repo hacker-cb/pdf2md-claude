@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Pre-commit hook for pdf2md-claude
+# Runs unit tests before allowing commit
+#
+# To bypass hook temporarily:
+#   git commit --no-verify
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+BOLD='\033[1m'
+
+# Symbols
+CHECK_MARK="✓"
+CROSS_MARK="✗"
+
+# Function to print step with status
+print_step() {
+    local message="$1"
+    printf "${BOLD}%-50s${NC}" "$message"
+}
+
+print_success() {
+    echo -e "${GREEN}${CHECK_MARK} PASSED${NC}"
+}
+
+print_failure() {
+    echo -e "${RED}${CROSS_MARK} FAILED${NC}"
+}
+
+print_header() {
+    echo ""
+    echo -e "${BOLD}=== Pre-commit checks (pdf2md-claude) ===${NC}"
+    echo ""
+}
+
+# Get project root (one level up from .githooks/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Check if virtual environment exists
+check_venv() {
+    if [ ! -d "$PROJECT_ROOT/.venv" ]; then
+        echo -e "${RED}Virtual environment not found at $PROJECT_ROOT/.venv${NC}"
+        echo -e "${YELLOW}Please run: cd $PROJECT_ROOT && python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Main execution
+print_header
+
+# Step 1: Check virtual environment
+print_step "Checking virtual environment..."
+if check_venv; then
+    print_success
+else
+    print_failure
+    exit 1
+fi
+
+# Step 2: Run unit tests
+print_step "Running unit tests..."
+cd "$PROJECT_ROOT"
+if .venv/bin/python -m pytest tests/ --tb=short -q > /dev/null 2>&1; then
+    print_success
+else
+    print_failure
+    echo ""
+    echo -e "${RED}Unit tests failed. To see details, run:${NC}"
+    echo "  cd $PROJECT_ROOT"
+    echo "  .venv/bin/python -m pytest tests/ -v"
+    echo ""
+    exit 1
+fi
+
+echo ""
+echo -e "${GREEN}${BOLD}All checks passed! ✓${NC}"
+echo ""
+
+exit 0
