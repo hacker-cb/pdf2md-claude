@@ -209,22 +209,25 @@ _RULE_OUTPUT = """\
 heading."""
 
 
-# Ordered rule list — auto-numbered when building the system prompt.
+# Named rule registry — each rule has a short key for programmatic access.
 # Ordering: global principles → content types → infrastructure/meta.
-_RULES: list[str] = [
-    _RULE_FIDELITY,       # 1. mindset: don't summarize/fabricate
-    _RULE_FORMATTING,     # 2. style: sup/sub, dashes, italics
-    _RULE_SKIP,           # 3. exclusions: headers/footers/TOC
-    _RULE_HEADINGS,       # 4. structure: section hierarchy
-    _RULE_TABLES,         # 5. content: table format (most complex)
-    _RULE_FORMULAS,       # 6. content: math notation
-    _RULE_IMAGES,         # 7. content: images (diagrams/figures/charts)
-    _RULE_PAGE_MARKERS,   # 8. infra: page boundary markers
-    _RULE_OUTPUT,         # 9. meta: raw output, no commentary
-]
+_DEFAULT_REGISTRY: tuple[tuple[str, str], ...] = (
+    ("fidelity",     _RULE_FIDELITY),       # 1. mindset: don't summarize/fabricate
+    ("formatting",   _RULE_FORMATTING),     # 2. style: sup/sub, dashes, italics
+    ("skip",         _RULE_SKIP),           # 3. exclusions: headers/footers/TOC
+    ("headings",     _RULE_HEADINGS),       # 4. structure: section hierarchy
+    ("tables",       _RULE_TABLES),         # 5. content: table format (most complex)
+    ("formulas",     _RULE_FORMULAS),       # 6. content: math notation
+    ("images",       _RULE_IMAGES),         # 7. content: images (diagrams/figures/charts)
+    ("page_markers", _RULE_PAGE_MARKERS),   # 8. infra: page boundary markers
+    ("output",       _RULE_OUTPUT),         # 9. meta: raw output, no commentary
+)
+
+# Backward-compatible unnamed rule list, derived from the registry.
+_RULES: list[str] = [text for _, text in _DEFAULT_REGISTRY]
 
 
-def _build_system_prompt(rules: list[str]) -> str:
+def build_system_prompt(rules: list[str]) -> str:
     """Assemble rules into a numbered system prompt.
 
     Each rule is prefixed with its 1-based index (``1. ...``, ``2. ...``)
@@ -234,7 +237,7 @@ def _build_system_prompt(rules: list[str]) -> str:
     return _PREAMBLE + "\n\n" + "\n\n".join(numbered)
 
 
-SYSTEM_PROMPT = _build_system_prompt(_RULES)
+SYSTEM_PROMPT = build_system_prompt(_RULES)
 
 
 # ---------------------------------------------------------------------------

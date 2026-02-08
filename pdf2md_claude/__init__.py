@@ -59,6 +59,7 @@ def __getattr__(name: str):
         "fmt_duration": "pdf2md_claude.models",
         "format_summary": "pdf2md_claude.models",
         # pdf2md_claude.prompt
+        "build_system_prompt": "pdf2md_claude.prompt",
         "SYSTEM_PROMPT": "pdf2md_claude.prompt",
         # pdf2md_claude.validator
         "validate_output": "pdf2md_claude.validator",
@@ -74,6 +75,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "build_system_prompt",
     "ChunkResult",
     "ChunkUsageStats",
     "ConversionResult",

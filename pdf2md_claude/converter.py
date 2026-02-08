@@ -233,6 +233,7 @@ def _send_pdf_to_claude(
     pdf_b64: str,
     user_prompt: str,
     use_cache: bool = False,
+    system_prompt: str | None = None,
 ) -> tuple[str, int, int, int, int, str]:
     """Send a base64-encoded PDF to Claude and return the response.
 
@@ -243,12 +244,18 @@ def _send_pdf_to_claude(
     system prompt and the PDF document block so that subsequent requests
     with the same system+PDF prefix hit the cache (1h TTL).
 
+    When ``system_prompt`` is provided, it replaces the built-in
+    ``SYSTEM_PROMPT``.
+
     Returns:
         Tuple of (markdown_text, input_tokens, output_tokens,
         cache_creation_tokens, cache_read_tokens, stop_reason).
     """
     # Build system prompt (with optional cache_control).
-    system_block: dict = {"type": "text", "text": SYSTEM_PROMPT}
+    system_block: dict = {
+        "type": "text",
+        "text": system_prompt if system_prompt is not None else SYSTEM_PROMPT,
+    }
     if use_cache:
         system_block["cache_control"] = _CACHE_CONTROL
 
@@ -416,6 +423,7 @@ def convert_pdf(
     pages_per_chunk: int,
     max_pages: int | None = None,
     use_cache: bool = False,
+    system_prompt: str | None = None,
 ) -> ConversionResult:
     """Convert a PDF to Markdown via Claude's native PDF API.
 
@@ -436,6 +444,8 @@ def convert_pdf(
             extraction without converting all pages).
         use_cache: Enable prompt caching (1h TTL) on system prompt and
             PDF content.  Reduces cost on re-runs with the same PDF.
+        system_prompt: Optional override for the built-in system prompt.
+            When ``None`` (default), uses ``SYSTEM_PROMPT``.
 
     Returns:
         ``ConversionResult`` with per-chunk results, aggregated stats,
@@ -457,6 +467,7 @@ def convert_pdf(
 
     return _convert_chunked(
         client, model, pdf_path, work_dir, total_pages, pages_per_chunk, use_cache,
+        system_prompt=system_prompt,
     )
 
 
@@ -468,6 +479,7 @@ def _convert_chunked(
     total_pages: int,
     pages_per_chunk: int,
     use_cache: bool = False,
+    system_prompt: str | None = None,
 ) -> ConversionResult:
     """Convert a PDF by splitting into disjoint chunks with context passing.
 
@@ -484,6 +496,7 @@ def _convert_chunked(
         total_pages: Total number of pages in the PDF.
         pages_per_chunk: Number of PDF pages per conversion chunk.
         use_cache: Enable prompt caching on system prompt and PDF content.
+        system_prompt: Optional override for the built-in system prompt.
 
     Returns:
         ``ConversionResult`` with per-chunk results, aggregated stats,
@@ -578,6 +591,7 @@ def _convert_chunked(
         chunk_start = time.time()
         markdown, inp, out, c_create, c_read = _convert_chunk(
             client, model, pdf_path, chunk, prompt, use_cache=use_cache,
+            system_prompt=system_prompt,
         )
         chunk_elapsed = time.time() - chunk_start
 
@@ -670,6 +684,7 @@ def _convert_chunk(
     chunk: ChunkPlan,
     prompt: str,
     use_cache: bool = False,
+    system_prompt: str | None = None,
 ) -> tuple[str, int, int, int, int]:
     """Convert a single chunk of PDF pages to Markdown.
 
@@ -680,6 +695,7 @@ def _convert_chunk(
         chunk: The chunk to convert.
         prompt: User prompt for this chunk.
         use_cache: Enable prompt caching on system prompt and PDF content.
+        system_prompt: Optional override for the built-in system prompt.
 
     Returns:
         Tuple of (markdown, input_tokens, output_tokens,
@@ -694,6 +710,7 @@ def _convert_chunk(
     start = time.time()
     markdown, inp, out, c_create, c_read, stop = _send_pdf_to_claude(
         client, model, pdf_b64, prompt, use_cache=use_cache,
+        system_prompt=system_prompt,
     )
     elapsed = time.time() - start
 
