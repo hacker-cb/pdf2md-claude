@@ -36,10 +36,11 @@ Start from `cli.py` to understand the entry point, then `pipeline.py` for single
 - `pdf2md_claude/validator.py` -- Post-conversion checks (page markers, page-end matching, image block pairing, tables, heading sequence gaps, binary sequence monotonicity, fabrication detection).
 - `pdf2md_claude/markers.py` -- Single source of truth for all HTML comment markers (`PAGE_BEGIN`, `PAGE_END`, `TABLE_CONTINUE`, `IMAGE_BEGIN`, `IMAGE_END`, `IMAGE_RECT`, `IMAGE_AI_GENERATED_DESCRIPTION_*`). All regex patterns and format strings live here.
 - `pdf2md_claude/prompt.py` -- Claude prompts. References marker definitions from `markers.py` via f-strings. Uses `{{placeholder}}` for runtime `.format()` values.
+- `pdf2md_claude/rules.py` -- Custom rules file support. Parses user rules files (`@replace`, `@append`, `@add`, `@add after`), builds custom system prompts, and generates rules templates. Key types: `RulesFileResult`.
 - `pdf2md_claude/models.py` -- Model configs, pricing, `DocumentUsageStats`, cost calculation.
 - `pdf2md_claude/client.py` -- Anthropic API client setup.
 
-Tests: `tests/test_converter.py`, `tests/test_images.py`, `tests/test_markers.py`, `tests/test_table_merger.py`, `tests/test_validator.py`, `tests/test_workdir.py`.
+Tests: `tests/test_converter.py`, `tests/test_images.py`, `tests/test_markers.py`, `tests/test_rules.py`, `tests/test_table_merger.py`, `tests/test_validator.py`, `tests/test_workdir.py`.
 
 ## Code Conventions
 

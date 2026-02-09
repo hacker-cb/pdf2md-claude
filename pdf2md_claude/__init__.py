@@ -61,6 +61,12 @@ def __getattr__(name: str):
         # pdf2md_claude.prompt
         "build_system_prompt": "pdf2md_claude.prompt",
         "SYSTEM_PROMPT": "pdf2md_claude.prompt",
+        # pdf2md_claude.rules
+        "AUTO_RULES_FILENAME": "pdf2md_claude.rules",
+        "RulesFileResult": "pdf2md_claude.rules",
+        "parse_rules_file": "pdf2md_claude.rules",
+        "build_custom_system_prompt": "pdf2md_claude.rules",
+        "generate_rules_template": "pdf2md_claude.rules",
         # pdf2md_claude.validator
         "validate_output": "pdf2md_claude.validator",
         "ValidationResult": "pdf2md_claude.validator",
@@ -99,4 +105,9 @@ __all__ = [
     "format_summary",
     "SYSTEM_PROMPT",
     "WorkDir",
+    "AUTO_RULES_FILENAME",
+    "RulesFileResult",
+    "parse_rules_file",
+    "build_custom_system_prompt",
+    "generate_rules_template",
 ]

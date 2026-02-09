@@ -23,6 +23,13 @@ from pdf2md_claude.client import create_client
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, needs_conversion
 from pdf2md_claude.models import MODELS, DocumentUsageStats, format_summary
 from pdf2md_claude.pipeline import convert_document, remerge_document
+from pdf2md_claude.prompt import SYSTEM_PROMPT
+from pdf2md_claude.rules import (
+    AUTO_RULES_FILENAME,
+    build_custom_system_prompt,
+    generate_rules_template,
+    parse_rules_file,
+)
 
 
 _log = logging.getLogger("pdf2md")
@@ -93,14 +100,20 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
-  %(prog)s document.pdf                    Convert single PDF
-  %(prog)s *.pdf                           Convert all PDFs in current dir
-  %(prog)s docs/*.pdf -o output/           Custom output directory
-  %(prog)s doc.pdf --max-pages 5           First 5 pages only
-  %(prog)s doc.pdf --pages-per-chunk {DEFAULT_PAGES_PER_CHUNK}    Smaller chunks (better quality)
-  %(prog)s doc.pdf --cache                 Enable prompt caching (1h TTL)
-  %(prog)s doc.pdf -f                      Force reconvert
-  %(prog)s doc.pdf --remerge               Re-merge from cached chunks (no API)
+  %(prog)s document.pdf                          Convert single PDF
+  %(prog)s *.pdf                                 Convert all PDFs in current dir
+  %(prog)s docs/*.pdf -o output/                 Custom output directory
+  %(prog)s doc.pdf --max-pages 5                 First 5 pages only
+  %(prog)s doc.pdf --pages-per-chunk {DEFAULT_PAGES_PER_CHUNK}          Smaller chunks (better quality)
+  %(prog)s doc.pdf --cache                       Enable prompt caching (1h TTL)
+  %(prog)s doc.pdf -f                            Force reconvert
+  %(prog)s doc.pdf --remerge                     Re-merge from cached chunks (no API)
+  %(prog)s --init-rules                          Generate .pdf2md.rules template
+  %(prog)s --init-rules my_rules.txt             Generate template at custom path
+  %(prog)s doc.pdf --rules my_rules.txt          Use custom rules
+  %(prog)s doc.pdf                               Auto-applies .pdf2md.rules if found
+  %(prog)s --show-prompt                         Show default system prompt
+  %(prog)s --rules my_rules.txt --show-prompt    Show merged prompt
         """,
     )
     parser.add_argument(
@@ -170,6 +183,29 @@ Examples:
         default=DEFAULT_MODEL_ALIAS,
         help="Claude model to use (default: %(default)s).",
     )
+    parser.add_argument(
+        "--init-rules",
+        type=Path,
+        nargs="?",
+        const=Path(AUTO_RULES_FILENAME),
+        default=None,
+        metavar="FILE",
+        help="Generate a rules template and exit "
+             f"(default: {AUTO_RULES_FILENAME}).",
+    )
+    parser.add_argument(
+        "--rules",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Custom rules file (replace/append/add rules). "
+             "Use -f to reconvert after changing rules.",
+    )
+    parser.add_argument(
+        "--show-prompt",
+        action="store_true",
+        help="Print the system prompt to stdout and exit.",
+    )
 
     # Show help if no arguments provided
     if len(sys.argv) == 1:
@@ -178,10 +214,33 @@ Examples:
 
     args = parser.parse_args()
 
+    # Standalone commands (no PDFs needed).
+    if args.init_rules is not None:
+        generate_rules_template(args.init_rules)
+        print(f"Rules template written to {args.init_rules}")
+        return 0
+
+    if args.show_prompt:
+        if args.rules:
+            parsed = parse_rules_file(args.rules)
+            prompt = build_custom_system_prompt(parsed)
+        else:
+            prompt = SYSTEM_PROMPT
+        print(prompt)
+        return 0
+
     # Validate: at least one PDF required
     if not args.pdfs:
         parser.print_help()
         return 0
+
+    # Argument validation.
+    if args.rules and args.remerge:
+        _log.error("--rules and --remerge cannot be used together")
+        return 1
+    if args.rules and not args.rules.is_file():
+        _log.error("Rules file not found: %s", args.rules)
+        return 1
 
     # Setup logging
     setup_colorized_logging()
@@ -251,6 +310,7 @@ Examples:
         success = 0
         failure = 0
         cached = 0
+        rules_cache: dict[Path, str] = {}
 
         for pdf_path in pdf_paths:
             doc_name = pdf_path.stem
@@ -270,6 +330,28 @@ Examples:
             try:
                 output_file = resolve_output(pdf_path, suffix, output_dir)
 
+                # Resolve custom rules for this PDF.
+                system_prompt = None
+                if not remerge:
+                    rules_path = args.rules
+                    if not rules_path:
+                        auto_path = pdf_path.parent / AUTO_RULES_FILENAME
+                        if auto_path.is_file():
+                            rules_path = auto_path
+                    if rules_path:
+                        resolved_rules = rules_path.resolve()
+                        if resolved_rules not in rules_cache:
+                            parsed = parse_rules_file(resolved_rules)
+                            rules_cache[resolved_rules] = build_custom_system_prompt(parsed)
+                            _log.info(
+                                "Custom rules (%s): %d replaced, %d appended, "
+                                "%d inserted, %d added",
+                                rules_path, len(parsed.replacements),
+                                len(parsed.appends), len(parsed.insertions),
+                                len(parsed.extras),
+                            )
+                        system_prompt = rules_cache[resolved_rules]
+
                 if remerge:
                     result = remerge_document(
                         output_file, pdf_path=pdf_path,
@@ -284,6 +366,7 @@ Examples:
                         pages_per_chunk=pages_per_chunk,
                         force=args.force,
                         extract_images=not args.no_images,
+                        system_prompt=system_prompt,
                     )
                 all_stats.append(result.stats)
                 success += 1
