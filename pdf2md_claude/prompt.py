@@ -188,7 +188,7 @@ marker pair. Missing page markers are treated as conversion errors.
    - Place `{_PB}` at the start and `{_PE}` at the end of each page.
    - Emit markers for EVERY page in the range — even blank pages, \
 image-only pages, or skipped content (e.g., Table of Contents).
-   - For skipped pages, place `{_PS}` between the markers (see rule 3).
+   - For skipped pages, place `{_PS}` between the markers (see the **Skip** rule).
    - N is the original document page number — the correct page range \
 will be specified in the conversion instructions.
    - Example structure:
