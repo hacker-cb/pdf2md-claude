@@ -93,12 +93,12 @@ markers — every page in the range must have a begin/end pair."""
 # Rule 4 — Headings
 _RULE_HEADINGS = """\
 **Headings**: Preserve the document's section numbering and hierarchy. \
-Map the document's heading depth to Markdown levels: `#` for the document title, \
-`##` for top-level sections (e.g. "11 Definition of commands"), \
-`###` for subsections (e.g. "11.2 Overview sheets"), \
-`####` for sub-subsections (e.g. "11.2.1 General"), \
-`#####` for deeper levels (e.g. "9.2.2.2 Standby"). \
-Count the dot-separated numbers to determine depth."""
+Count the dot-separated numbers to determine Markdown heading depth:
+   - `#` — document title
+   - `##` — top-level sections (e.g. "11 Definition of commands")
+   - `###` — subsections (e.g. "11.2 Overview sheets")
+   - `####` — sub-subsections (e.g. "11.2.1 General")
+   - `#####` — deeper levels (e.g. "9.2.2.2 Standby")"""
 
 # Rule 5 — Tables
 _RULE_TABLES = f"""\
@@ -183,14 +183,15 @@ content on the page.
 
 # Rule 8 — Page markers
 _RULE_PAGE_MARKERS = f"""\
-**Page markers** (CRITICAL): You MUST wrap EVERY page's content with a pair \
-of markers: `{_PB}` at the start and `{_PE}` at the end. \
-Emit these for EVERY page in the specified range, even if a page is blank, \
-contains only images, or its content is skipped (e.g., Table of Contents). \
-For skipped pages, place `{_PS}` between the markers (see rule 3). \
-N is the original document page number — the correct page range will be \
-specified in the conversion instructions. \
-Missing page markers are treated as conversion errors. Example structure:
+**Page markers** (CRITICAL): Wrap EVERY page's content with a begin/end \
+marker pair. Missing page markers are treated as conversion errors.
+   - Place `{_PB}` at the start and `{_PE}` at the end of each page.
+   - Emit markers for EVERY page in the range — even blank pages, \
+image-only pages, or skipped content (e.g., Table of Contents).
+   - For skipped pages, place `{_PS}` between the markers (see rule 3).
+   - N is the original document page number — the correct page range \
+will be specified in the conversion instructions.
+   - Example structure:
    ```
    {PAGE_BEGIN.format(5)}
    ...page 5 content...
