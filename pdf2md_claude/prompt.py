@@ -32,11 +32,12 @@ _IR = IMAGE_RECT_EXAMPLE  # <!-- IMAGE_RECT 0.02,0.15,0.98,0.65 -->
 # System prompt — individual rule definitions
 # ---------------------------------------------------------------------------
 
-_PREAMBLE = (
+_PREAMBLE_BODY = (
     "You are a precise document converter. "
-    "Convert the provided PDF pages to clean, well-structured Markdown. "
-    "Follow these rules strictly:"
+    "Convert the provided PDF pages to clean, well-structured Markdown."
 )
+
+_PREAMBLE_CLOSING = "Follow these rules strictly:"
 
 # ---- Global principles (mindset before content) ----
 
@@ -227,14 +228,27 @@ _DEFAULT_REGISTRY: tuple[tuple[str, str], ...] = (
 _RULES: list[str] = [text for _, text in _DEFAULT_REGISTRY]
 
 
-def build_system_prompt(rules: list[str]) -> str:
+def build_system_prompt(
+    rules: list[str],
+    preamble_body: str = _PREAMBLE_BODY,
+) -> str:
     """Assemble rules into a numbered system prompt.
 
     Each rule is prefixed with its 1-based index (``1. ...``, ``2. ...``)
     and joined with blank lines.
+
+    Parameters
+    ----------
+    rules:
+        Ordered list of rule texts (numbering is generated automatically).
+    preamble_body:
+        Introductory text placed before the closing "Follow these rules
+        strictly:" line.  Defaults to :data:`_PREAMBLE_BODY`.
     """
     numbered = [f"{i}. {rule}" for i, rule in enumerate(rules, 1)]
-    return _PREAMBLE + "\n\n" + "\n\n".join(numbered)
+    return (
+        preamble_body + "\n\n" + _PREAMBLE_CLOSING + "\n\n" + "\n\n".join(numbered)
+    )
 
 
 SYSTEM_PROMPT = build_system_prompt(_RULES)
