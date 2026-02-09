@@ -1,0 +1,3 @@
+; Rules for Chinese-language PDF
+@append preamble
+The source document is in Chinese. Translate all content to English.
