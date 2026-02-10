@@ -327,7 +327,7 @@ def _get_context_tail(
 
     # Find all PAGE_BEGIN positions.
     begin_positions = [
-        m.start() for m in PAGE_BEGIN.re.finditer(markdown)
+        m.start() for m in PAGE_BEGIN.re_value.finditer(markdown)
     ]
     if not begin_positions:
         # No page markers — fall back to line-based tail.
@@ -379,7 +379,7 @@ def _remap_page_markers(markdown: str, page_start: int) -> str:
     Returns:
         Markdown with remapped page markers (or unchanged if no remap needed).
     """
-    markers = PAGE_BEGIN.re_groups.findall(markdown)
+    markers = PAGE_BEGIN.re_value_groups.findall(markdown)
     if not markers:
         return markdown
 
@@ -405,8 +405,8 @@ def _remap_page_markers(markdown: str, page_start: int) -> str:
     # Remap BEGIN and END markers.
     # IMAGE_RECT no longer carries a page number — it derives the page
     # from the enclosing PAGE_BEGIN marker, so no remapping needed.
-    result = PAGE_BEGIN.re_groups.sub(_remap, markdown)
-    result = PAGE_END.re_groups.sub(_remap, result)
+    result = PAGE_BEGIN.re_value_groups.sub(_remap, markdown)
+    result = PAGE_END.re_value_groups.sub(_remap, result)
     return result
 
 

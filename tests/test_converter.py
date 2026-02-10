@@ -422,7 +422,7 @@ class TestGetContextTail:
         md = "\n".join([_make_page(i, f"Line {i}") for i in range(1, 6)])
         result = _get_context_tail(md, min_pages=1, min_lines=20)
         # Should have extended beyond 1 page to meet min_lines.
-        page_count = len(PAGE_BEGIN.re.findall(result))
+        page_count = len(PAGE_BEGIN.re_value.findall(result))
         assert page_count > 1
 
     def test_always_complete_pages(self):

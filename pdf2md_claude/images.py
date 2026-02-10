@@ -24,10 +24,10 @@ from pathlib import Path
 import pymupdf
 
 from pdf2md_claude.markers import (
-    IMAGE_BEGIN_RE,
-    IMAGE_END_RE,
+    IMAGE_BEGIN,
+    IMAGE_END,
     IMAGE_FILENAME_FORMAT,
-    IMAGE_RECT_RE,
+    IMAGE_RECT,
     IMAGE_REF_RE,
     PAGE_BEGIN,
 )
@@ -161,17 +161,17 @@ def parse_image_rects(markdown: str) -> list[ImageRect]:
 
     for line in lines:
         # Track current page from PAGE_BEGIN markers.
-        page_match = PAGE_BEGIN.re.search(line)
+        page_match = PAGE_BEGIN.re_value.search(line)
         if page_match:
             current_page = int(page_match.group(1))
 
-        if IMAGE_BEGIN_RE.search(line):
+        if IMAGE_BEGIN.re.search(line):
             in_block = True
             block_rect_match = None
             block_caption = ""
             continue
 
-        if in_block and IMAGE_END_RE.search(line):
+        if in_block and IMAGE_END.re.search(line):
             # Flush block: if we found an IMAGE_RECT, emit it.
             if block_rect_match is not None and current_page is not None:
                 m = block_rect_match
@@ -192,7 +192,7 @@ def parse_image_rects(markdown: str) -> list[ImageRect]:
 
         if in_block:
             # Look for IMAGE_RECT marker.
-            rm = IMAGE_RECT_RE.search(line)
+            rm = IMAGE_RECT.re_value.search(line)
             if rm:
                 block_rect_match = rm
             # Look for bold caption line.
@@ -763,17 +763,17 @@ def inject_image_refs(
 
     for line in lines:
         # Track page number.
-        page_match = PAGE_BEGIN.re.search(line)
+        page_match = PAGE_BEGIN.re_value.search(line)
         if page_match:
             current_page = int(page_match.group(1))
 
         # Detect IMAGE_BEGIN — start buffering.
-        if IMAGE_BEGIN_RE.search(line):
+        if IMAGE_BEGIN.re.search(line):
             block_buffer = [line]
             continue
 
         # Detect IMAGE_END — flush the buffered block.
-        if block_buffer is not None and IMAGE_END_RE.search(line):
+        if block_buffer is not None and IMAGE_END.re.search(line):
             block_buffer.append(line)
             result.extend(
                 _process_image_block(

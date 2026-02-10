@@ -6,27 +6,16 @@ code always reference the same marker format.
 """
 
 from pdf2md_claude.markers import (
-    IMAGE_AI_GENERATED_DESCRIPTION_BEGIN_MARKER,
-    IMAGE_AI_GENERATED_DESCRIPTION_END_MARKER,
-    IMAGE_BEGIN_MARKER,
-    IMAGE_END_MARKER,
-    IMAGE_RECT_EXAMPLE,
+    IMAGE_AI_DESC_BEGIN,
+    IMAGE_AI_DESC_END,
+    IMAGE_BEGIN,
+    IMAGE_END,
+    IMAGE_RECT,
     PAGE_BEGIN,
     PAGE_END,
-    PAGE_SKIP_MARKER,
-    TABLE_CONTINUE_MARKER,
+    PAGE_SKIP,
+    TABLE_CONTINUE,
 )
-
-# Short aliases for readability inside prompt strings.
-_PB = PAGE_BEGIN.example  # <!-- PDF_PAGE_BEGIN N -->
-_PE = PAGE_END.example  # <!-- PDF_PAGE_END N -->
-_PS = PAGE_SKIP_MARKER  # <!-- PDF_PAGE_SKIP -->
-_TC = TABLE_CONTINUE_MARKER  # <!-- TABLE_CONTINUE -->
-_IB = IMAGE_BEGIN_MARKER  # <!-- IMAGE_BEGIN -->
-_IE = IMAGE_END_MARKER  # <!-- IMAGE_END -->
-_IDB = IMAGE_AI_GENERATED_DESCRIPTION_BEGIN_MARKER
-_IDE = IMAGE_AI_GENERATED_DESCRIPTION_END_MARKER
-_IR = IMAGE_RECT_EXAMPLE  # <!-- IMAGE_RECT 0.02,0.15,0.98,0.65 -->
 
 # ---------------------------------------------------------------------------
 # System prompt — individual rule definitions
@@ -63,10 +52,10 @@ physical page."""
 _RULE_PAGE_MARKERS = f"""\
 **Page markers** (CRITICAL): Wrap EVERY page's content with a begin/end \
 marker pair. Missing page markers are treated as conversion errors.
-   - Place `{_PB}` at the start and `{_PE}` at the end of each page.
+   - Place `{PAGE_BEGIN.example}` at the start and `{PAGE_END.example}` at the end of each page.
    - Emit markers for EVERY page in the range — even blank pages, \
 image-only pages, or skipped content (e.g., Table of Contents).
-   - For skipped pages, place `{_PS}` between the markers (see the **Skip** rule).
+   - For skipped pages, place `{PAGE_SKIP.marker}` between the markers (see the **Skip** rule).
    - N is the original document page number — the correct page range \
 will be specified in the conversion instructions.
    - Example structure:
@@ -75,7 +64,7 @@ will be specified in the conversion instructions.
    ...page 5 content...
    {PAGE_END.format(5)}
    {PAGE_BEGIN.format(6)}
-   {_PS}
+   {PAGE_SKIP.marker}
    {PAGE_END.format(6)}
    {PAGE_BEGIN.format(7)}
    ...page 7 content...
@@ -88,11 +77,11 @@ _RULE_SKIP = f"""\
 copyright/license lines. Do NOT include the Table of Contents \
 (it references printable page numbers which are meaningless in markdown).
    - **CRITICAL**: When you skip a page's content, you MUST still emit \
-the page markers for that page. Place `{_PS}` between the begin/end \
+the page markers for that page. Place `{PAGE_SKIP.marker}` between the begin/end \
 markers to signal the skip is intentional:
    ```
    {PAGE_BEGIN.format(9)}
-   {_PS}
+   {PAGE_SKIP.marker}
    {PAGE_END.format(9)}
    ```
    This preserves correct page numbering. NEVER silently omit page \
@@ -155,7 +144,7 @@ not double `<br><br>`) for line breaks within cells.
    - **Continued tables**: If a table on the current page is a continuation \
 of a table from a previous page (the PDF shows "(continued)" in the header, \
 or the table has the same column structure and title as one from a prior \
-page), emit `{_TC}` on its own line immediately BEFORE the table title \
+page), emit `{TABLE_CONTINUE.marker}` on its own line immediately BEFORE the table title \
 or `<table>` tag. Still output the full table including its repeated headers \
 exactly as they appear in the PDF — the marker is metadata for post-processing."""
 
@@ -165,11 +154,11 @@ _RULE_IMAGES = f"""\
 structured markers with a bounding box and a detailed description. \
 Do NOT output `![...](...)` references — image files are generated \
 automatically in post-processing.
-   - Wrap the entire image block with `{_IB}` and `{_IE}` markers.
-   - **Bounding box**: Immediately after `{_IB}`, emit an `IMAGE_RECT` \
+   - Wrap the entire image block with `{IMAGE_BEGIN.marker}` and `{IMAGE_END.marker}` markers.
+   - **Bounding box**: Immediately after `{IMAGE_BEGIN.marker}`, emit an `IMAGE_RECT` \
 marker with normalized coordinates (0.0–1.0, origin at top-left, \
 x grows right, y grows down): \
-`<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->`. Example: `{_IR}`.
+`{IMAGE_RECT.prompt_template}`. Example: `{IMAGE_RECT.example}`.
    - **Bounding box precision** (CRITICAL — read carefully): \
 Each edge must align with the outermost **drawn graphical primitive** \
 of the figure (lines, shapes, axes, arrows, data points). \
@@ -194,7 +183,7 @@ body text paragraphs above or below the figure.
    - **Caption**: Preserve the original caption exactly as it appears in \
 the PDF (e.g., "Figure 5 – Timing diagram") as a `**bold**` line inside \
 the image block.
-   - **Description**: Wrap with `{_IDB}` and `{_IDE}` markers. Inside, \
+   - **Description**: Wrap with `{IMAGE_AI_DESC_BEGIN.marker}` and `{IMAGE_AI_DESC_END.marker}` markers. Inside, \
 output a blockquote (`> ...`) with a thorough description: all labeled \
 elements, axes, values, arrows, connections, states, transitions, and \
 spatial relationships. Include enough detail that a reader who cannot see \
@@ -207,13 +196,13 @@ description. Only convert content that exists as first-class document \
 content on the page.
    - Example:
    ```
-   {_IB}
-   {_IR}
+   {IMAGE_BEGIN.marker}
+   {IMAGE_RECT.example}
    **Figure 5 – Timing diagram for forward frame**
-   {_IDB}
+   {IMAGE_AI_DESC_BEGIN.marker}
    > The diagram shows a timing waveform with two signal lines...
-   {_IDE}
-   {_IE}
+   {IMAGE_AI_DESC_END.marker}
+   {IMAGE_END.marker}
    ```"""
 
 
@@ -303,7 +292,7 @@ Convert these PDF pages to Markdown following the system instructions.
 
 IMPORTANT: These PDF pages correspond to pages {{page_start}} through \
 {{page_end}} of the original document ({{page_count}} pages). Wrap each \
-page's content with `{_PB}` and `{_PE}` markers using the original page \
+page's content with `{PAGE_BEGIN.example}` and `{PAGE_END.example}` markers using the original page \
 numbers: the first page of this chunk is page {{page_start}}, the next is \
 page {{page_start_plus_1}}, and so on sequentially. You MUST emit exactly \
 {{page_count}} begin/end marker pairs, one pair for each page from \

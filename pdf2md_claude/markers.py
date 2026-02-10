@@ -4,21 +4,31 @@ Single source of truth for all HTML comment markers used in converted
 markdown output.  Provides format strings, compiled regexes, and prompt
 examples so that no module needs to hard-code marker patterns.
 
+Every marker — valueless, integer-valued, or multi-valued — is a
+:class:`MarkerDef` instance.  The class auto-generates literal strings,
+compiled regexes, and prompt helpers from the tag name and an optional
+value specification.
+
 Usage::
 
-    from pdf2md_claude.markers import PAGE_BEGIN, PAGE_END
+    from pdf2md_claude.markers import PAGE_BEGIN, PAGE_END, IMAGE_RECT
 
-    # Generate a marker
-    PAGE_BEGIN.format(42)   # '<!-- PDF_PAGE_BEGIN 42 -->'
-    PAGE_END.format(42)     # '<!-- PDF_PAGE_END 42 -->'
+    # Valueless marker
+    PAGE_SKIP.marker            # '<!-- PDF_PAGE_SKIP -->'
+    PAGE_SKIP.re.search(text)   # match valueless form
 
-    # Match markers in text
-    PAGE_BEGIN.re.findall(text)         # ['42', '43', ...]
-    PAGE_BEGIN.re_groups.sub(cb, text)  # substitution with groups
-    PAGE_BEGIN.re_line.findall(text)    # line-anchored matches
+    # Integer-valued marker
+    PAGE_BEGIN.format(42)       # '<!-- PDF_PAGE_BEGIN 42 -->'
+    PAGE_BEGIN.example          # '<!-- PDF_PAGE_BEGIN N -->'
+    PAGE_BEGIN.re_value.findall(text)          # ['42', '43', ...]
+    PAGE_BEGIN.re_value_groups.sub(cb, text)   # substitution with groups
+    PAGE_BEGIN.re_value_line.findall(text)     # line-anchored matches
 
-    # Prompt-ready example text
-    PAGE_BEGIN.example   # '<!-- PDF_PAGE_BEGIN N -->'
+    # Coordinate-valued marker
+    IMAGE_RECT.format(x0=0.02, y0=0.15, x1=0.98, y1=0.65)
+    IMAGE_RECT.example          # '<!-- IMAGE_RECT 0.02,0.15,0.98,0.65 -->'
+    IMAGE_RECT.prompt_template  # '<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->'
+    IMAGE_RECT.re_value.search(text)  # captures (x0, y0, x1, y1)
 """
 
 from __future__ import annotations
@@ -28,72 +38,179 @@ from dataclasses import dataclass
 from functools import cached_property
 
 
+def _to_non_capturing(pattern: str) -> str:
+    """Convert all capturing groups in *pattern* to non-capturing.
+
+    Replaces ``(`` that starts a capturing group with ``(?:``.
+    Already non-capturing groups (``(?:``), lookaheads (``(?=``),
+    and other special groups (``(?...``) are left untouched.
+    """
+    return re.sub(r"\((?!\?)", "(?:", pattern)
+
+
 @dataclass(frozen=True)
 class MarkerDef:
-    """Definition of a single HTML-comment marker type.
+    """Unified HTML-comment marker definition.
 
-    All regex variants are auto-generated from the *tag* name, so adding
-    a new marker is a single line::
+    Handles valueless, integer-valued, and multi-valued markers from a
+    single class.  All regex variants are auto-generated from *tag* and
+    the optional value specification.
 
-        SECTION = MarkerDef("SECTION")
-
-    Attributes:
-        tag: Upper-case token embedded in the HTML comment,
-            e.g. ``"PDF_PAGE_BEGIN"``.
+    Parameters
+    ----------
+    tag:
+        Upper-case token embedded in the HTML comment,
+        e.g. ``"PDF_PAGE_BEGIN"``, ``"TABLE_CONTINUE"``.
+    _value_re:
+        Regex pattern for the value payload (with capture groups).
+        Empty string means the marker is valueless.
+    _value_fmt:
+        Python ``.format()`` template for generating the value part.
+        Supports both positional (``"{0}"``) and named
+        (``"{x0},{y0},{x1},{y1}"``) placeholders.
+    _example_value:
+        Example value string for prompt helpers (e.g. ``"N"``).
+    _prompt_value:
+        Alternative template value for prompts (e.g.
+        ``"<x0>,<y0>,<x1>,<y1>"``).  Falls back to *_example_value*
+        when empty.
     """
 
     tag: str
+    _value_re: str = ""
+    _value_fmt: str = ""
+    _example_value: str = ""
+    _prompt_value: str = ""
 
-    # -- Formatting --------------------------------------------------------
+    # -- Valueless form (always available) ---------------------------------
 
-    def format(self, value: int) -> str:
-        """Generate a marker string.
+    @property
+    def marker(self) -> str:
+        """Literal valueless marker string.
+
+        >>> TABLE_CONTINUE.marker
+        '<!-- TABLE_CONTINUE -->'
+        """
+        return f"<!-- {self.tag} -->"
+
+    @cached_property
+    def re(self) -> re.Pattern[str]:
+        """Regex matching the valueless form (no capture groups).
+
+        >>> TABLE_CONTINUE.re.search('<!-- TABLE_CONTINUE -->') is not None
+        True
+        """
+        return re.compile(rf"<!--\s*{re.escape(self.tag)}\s*-->")
+
+    # -- Valued form -------------------------------------------------------
+
+    @property
+    def has_value(self) -> bool:
+        """Whether this marker carries a value payload."""
+        return bool(self._value_re)
+
+    def format(self, *args: object, **kwargs: object) -> str:
+        """Generate a marker string with a formatted value.
+
+        Delegates to ``self._value_fmt.format(*args, **kwargs)``.
 
         >>> PAGE_BEGIN.format(42)
         '<!-- PDF_PAGE_BEGIN 42 -->'
+        >>> IMAGE_RECT.format(x0=0.02, y0=0.15, x1=0.98, y1=0.65)
+        '<!-- IMAGE_RECT 0.02,0.15,0.98,0.65 -->'
         """
+        if not self._value_fmt:
+            raise TypeError(
+                f"Marker {self.tag!r} is valueless — "
+                f"use .marker instead of .format()"
+            )
+        try:
+            value = self._value_fmt.format(*args, **kwargs)
+        except (IndexError, KeyError) as exc:
+            raise TypeError(
+                f"Marker {self.tag!r} format {self._value_fmt!r} "
+                f"called with args={args}, kwargs={kwargs}"
+            ) from exc
         return f"<!-- {self.tag} {value} -->"
 
     @property
     def example(self) -> str:
         """Human-readable example for use in prompts.
 
+        Returns the valueless form when no example value is configured.
+
         >>> PAGE_BEGIN.example
         '<!-- PDF_PAGE_BEGIN N -->'
+        >>> TABLE_CONTINUE.example
+        '<!-- TABLE_CONTINUE -->'
         """
-        return f"<!-- {self.tag} N -->"
+        if self._example_value:
+            return f"<!-- {self.tag} {self._example_value} -->"
+        return self.marker
 
-    # -- Compiled regexes (lazy) -------------------------------------------
+    @property
+    def prompt_template(self) -> str:
+        """Prompt-ready template showing the value format.
+
+        Uses ``_prompt_value`` when set, otherwise falls back to
+        :attr:`example`.
+
+        >>> IMAGE_RECT.prompt_template
+        '<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->'
+        >>> PAGE_BEGIN.prompt_template
+        '<!-- PDF_PAGE_BEGIN N -->'
+        """
+        if self._prompt_value:
+            return f"<!-- {self.tag} {self._prompt_value} -->"
+        return self.example
 
     @cached_property
-    def re(self) -> re.Pattern[str]:
-        """Basic regex — captures ``(value)``.
+    def re_value(self) -> re.Pattern[str]:
+        """Regex matching the valued form — captures value group(s).
 
-        Use for scanning / validation where you only need the numeric
-        value inside the marker.
+        For integer markers captures ``(value)``.  For coordinate
+        markers captures ``(x0, y0, x1, y1)``.
+
+        Raises ``TypeError`` if the marker is valueless.
         """
-        return re.compile(rf"<!--\s*{re.escape(self.tag)}\s+(\d+)\s*-->")
-
-    @cached_property
-    def re_groups(self) -> re.Pattern[str]:
-        """Grouped regex — captures ``(prefix)(value)(suffix)``.
-
-        Use for substitution / remapping where you need to replace only
-        the numeric value while preserving surrounding whitespace.
-        """
+        if not self._value_re:
+            raise TypeError(
+                f"Marker {self.tag!r} is valueless — use .re instead"
+            )
         return re.compile(
-            rf"(<!--\s*{re.escape(self.tag)}\s+)(\d+)(\s*-->)"
+            rf"<!--\s*{re.escape(self.tag)}\s+{self._value_re}\s*-->"
         )
 
     @cached_property
-    def re_line(self) -> re.Pattern[str]:
-        """Line-anchored regex — captures ``(value)``.
+    def re_value_groups(self) -> re.Pattern[str]:
+        """Grouped regex — captures ``(prefix)(raw_value)(suffix)``.
+
+        All capture groups within the value pattern are converted to
+        non-capturing so that group(2) always contains the full raw
+        value string.  Use for substitution / remapping.
+        """
+        if not self._value_re:
+            raise TypeError(
+                f"Marker {self.tag!r} is valueless — use .re instead"
+            )
+        nc = _to_non_capturing(self._value_re)
+        return re.compile(
+            rf"(<!--\s*{re.escape(self.tag)}\s+)({nc})(\s*-->)"
+        )
+
+    @cached_property
+    def re_value_line(self) -> re.Pattern[str]:
+        """Line-anchored regex — captures value group(s).
 
         Matches only when the marker is the sole content on its line.
         Uses ``re.MULTILINE``.
         """
+        if not self._value_re:
+            raise TypeError(
+                f"Marker {self.tag!r} is valueless — use .re instead"
+            )
         return re.compile(
-            rf"^<!--\s*{re.escape(self.tag)}\s+(\d+)\s*-->$",
+            rf"^<!--\s*{re.escape(self.tag)}\s+{self._value_re}\s*-->$",
             re.MULTILINE,
         )
 
@@ -102,33 +219,34 @@ class MarkerDef:
 # Marker instances (single source of truth)
 # ---------------------------------------------------------------------------
 
-PAGE_BEGIN = MarkerDef("PDF_PAGE_BEGIN")
+# -- Valued markers (integer payload) --------------------------------------
+
+PAGE_BEGIN = MarkerDef(
+    "PDF_PAGE_BEGIN",
+    _value_re=r"(\d+)",
+    _value_fmt="{0}",
+    _example_value="N",
+)
 """Marks the start of a PDF page's content in the converted markdown."""
 
-PAGE_END = MarkerDef("PDF_PAGE_END")
+PAGE_END = MarkerDef(
+    "PDF_PAGE_END",
+    _value_re=r"(\d+)",
+    _value_fmt="{0}",
+    _example_value="N",
+)
 """Marks the end of a PDF page's content in the converted markdown."""
 
-# ---------------------------------------------------------------------------
-# Valueless markers (no numeric payload)
-# ---------------------------------------------------------------------------
+# -- Valueless markers (no payload) ----------------------------------------
 
-TABLE_CONTINUE_TAG = "TABLE_CONTINUE"
-"""Tag name for the table-continuation marker."""
+TABLE_CONTINUE = MarkerDef("TABLE_CONTINUE")
+"""Table-continuation marker.
 
-TABLE_CONTINUE_MARKER = f"<!-- {TABLE_CONTINUE_TAG} -->"
-"""Literal marker string: ``<!-- TABLE_CONTINUE -->``."""
+Placed before a ``<table>`` that continues a table from a previous page.
+"""
 
-TABLE_CONTINUE_RE = re.compile(r"<!--\s*TABLE_CONTINUE\s*-->")
-"""Regex matching a ``TABLE_CONTINUE`` marker (no capture groups)."""
-
-TABLE_BLOCK_RE = re.compile(
-    r"<table\b[^>]*>.*?</table>",
-    re.DOTALL | re.IGNORECASE,
-)
-"""Regex matching a full ``<table>...</table>`` HTML block (no capture groups)."""
-
-PAGE_SKIP_TAG = "PDF_PAGE_SKIP"
-"""Tag name for the page-skip marker.
+PAGE_SKIP = MarkerDef("PDF_PAGE_SKIP")
+"""Page-skip marker.
 
 Placed between ``PAGE_BEGIN`` and ``PAGE_END`` when a page's content is
 intentionally omitted (e.g., Table of Contents, copyright pages).
@@ -136,86 +254,33 @@ Preserves correct page numbering while signalling that the empty content
 is deliberate, not an error.
 """
 
-PAGE_SKIP_MARKER = f"<!-- {PAGE_SKIP_TAG} -->"
-"""Literal marker string: ``<!-- PDF_PAGE_SKIP -->``."""
+IMAGE_BEGIN = MarkerDef("IMAGE_BEGIN")
+"""Image-block start marker."""
 
-PAGE_SKIP_RE = re.compile(r"<!--\s*PDF_PAGE_SKIP\s*-->")
-"""Regex matching a ``PDF_PAGE_SKIP`` marker (no capture groups)."""
+IMAGE_END = MarkerDef("IMAGE_END")
+"""Image-block end marker."""
 
-# ---------------------------------------------------------------------------
-# Image block markers (valueless)
-# ---------------------------------------------------------------------------
-
-IMAGE_BEGIN_TAG = "IMAGE_BEGIN"
-"""Tag name for the image-block start marker."""
-
-IMAGE_BEGIN_MARKER = f"<!-- {IMAGE_BEGIN_TAG} -->"
-"""Literal marker string: ``<!-- IMAGE_BEGIN -->``."""
-
-IMAGE_BEGIN_RE = re.compile(r"<!--\s*IMAGE_BEGIN\s*-->")
-"""Regex matching an ``IMAGE_BEGIN`` marker (no capture groups)."""
-
-IMAGE_END_TAG = "IMAGE_END"
-"""Tag name for the image-block end marker."""
-
-IMAGE_END_MARKER = f"<!-- {IMAGE_END_TAG} -->"
-"""Literal marker string: ``<!-- IMAGE_END -->``."""
-
-IMAGE_END_RE = re.compile(r"<!--\s*IMAGE_END\s*-->")
-"""Regex matching an ``IMAGE_END`` marker (no capture groups)."""
-
-# ---------------------------------------------------------------------------
-# AI-generated image description markers (nested inside IMAGE block)
-# ---------------------------------------------------------------------------
-
-IMAGE_AI_GENERATED_DESCRIPTION_BEGIN_TAG = "IMAGE_AI_GENERATED_DESCRIPTION_BEGIN"
-"""Tag name for the AI-generated image description start marker.
+IMAGE_AI_DESC_BEGIN = MarkerDef("IMAGE_AI_GENERATED_DESCRIPTION_BEGIN")
+"""AI-generated image description start marker.
 
 Content between this marker and the corresponding END marker is an
 AI-generated textual description of the image — it does NOT come from the
 PDF source text and should be excluded from fidelity checks.
 """
 
-IMAGE_AI_GENERATED_DESCRIPTION_BEGIN_MARKER = (
-    f"<!-- {IMAGE_AI_GENERATED_DESCRIPTION_BEGIN_TAG} -->"
+IMAGE_AI_DESC_END = MarkerDef("IMAGE_AI_GENERATED_DESCRIPTION_END")
+"""AI-generated image description end marker."""
+
+# -- Coordinate-valued marker (4-float payload) ----------------------------
+
+IMAGE_RECT = MarkerDef(
+    "IMAGE_RECT",
+    _value_re=r"([0-9.]+),([0-9.]+),([0-9.]+),([0-9.]+)",
+    _value_fmt="{x0},{y0},{x1},{y1}",
+    _example_value="0.02,0.15,0.98,0.65",
+    _prompt_value="<x0>,<y0>,<x1>,<y1>",
 )
-"""Literal marker string: ``<!-- IMAGE_AI_GENERATED_DESCRIPTION_BEGIN -->``."""
-
-IMAGE_AI_GENERATED_DESCRIPTION_BEGIN_RE = re.compile(
-    r"<!--\s*IMAGE_AI_GENERATED_DESCRIPTION_BEGIN\s*-->"
-)
-"""Regex matching an ``IMAGE_AI_GENERATED_DESCRIPTION_BEGIN`` marker."""
-
-IMAGE_AI_GENERATED_DESCRIPTION_END_TAG = "IMAGE_AI_GENERATED_DESCRIPTION_END"
-"""Tag name for the AI-generated image description end marker."""
-
-IMAGE_AI_GENERATED_DESCRIPTION_END_MARKER = (
-    f"<!-- {IMAGE_AI_GENERATED_DESCRIPTION_END_TAG} -->"
-)
-"""Literal marker string: ``<!-- IMAGE_AI_GENERATED_DESCRIPTION_END -->``."""
-
-IMAGE_AI_GENERATED_DESCRIPTION_END_RE = re.compile(
-    r"<!--\s*IMAGE_AI_GENERATED_DESCRIPTION_END\s*-->"
-)
-"""Regex matching an ``IMAGE_AI_GENERATED_DESCRIPTION_END`` marker."""
-
-IMAGE_AI_DESCRIPTION_BLOCK_RE = re.compile(
-    r"<!--\s*IMAGE_AI_GENERATED_DESCRIPTION_BEGIN\s*-->"
-    r".*?"
-    r"<!--\s*IMAGE_AI_GENERATED_DESCRIPTION_END\s*-->",
-    re.DOTALL,
-)
-"""Regex matching a full AI-generated description block (begin through end).
-
-Use for stripping AI-generated content before fidelity checks.
-"""
-
-# ---------------------------------------------------------------------------
-# Image bounding-box marker (inside IMAGE block, carries coordinates)
-# ---------------------------------------------------------------------------
-
-IMAGE_RECT_TAG = "IMAGE_RECT"
-"""Tag name for the image bounding-box marker.
+"""Image bounding-box marker.
 
 Placed inside an ``IMAGE_BEGIN`` / ``IMAGE_END`` block.  Carries
 **normalized** bounding-box coordinates (0.0–1.0, origin at top-left).
@@ -223,25 +288,25 @@ The page number is derived from the enclosing ``PAGE_BEGIN`` marker,
 so it is NOT repeated here.
 """
 
-IMAGE_RECT_MARKER_FORMAT = "<!-- IMAGE_RECT {x0},{y0},{x1},{y1} -->"
-"""Python format string for generating an ``IMAGE_RECT`` marker.
+# ---------------------------------------------------------------------------
+# Composite / utility regexes (not single-marker patterns)
+# ---------------------------------------------------------------------------
 
->>> IMAGE_RECT_MARKER_FORMAT.format(x0=0.02, y0=0.15, x1=0.98, y1=0.65)
-'<!-- IMAGE_RECT 0.02,0.15,0.98,0.65 -->'
-"""
-
-IMAGE_RECT_EXAMPLE = "<!-- IMAGE_RECT 0.02,0.15,0.98,0.65 -->"
-"""Human-readable example for use in prompts."""
-
-IMAGE_RECT_RE = re.compile(
-    r"<!--\s*IMAGE_RECT\s+"
-    r"([0-9.]+),([0-9.]+),([0-9.]+),([0-9.]+)\s*-->"
+TABLE_BLOCK_RE = re.compile(
+    r"<table\b[^>]*>.*?</table>",
+    re.DOTALL | re.IGNORECASE,
 )
-"""Regex matching an ``IMAGE_RECT`` marker.
+"""Regex matching a full ``<table>...</table>`` HTML block (no capture groups)."""
 
-Captures four groups: ``(x0, y0, x1, y1)`` where coordinates
-are normalized floats (0.0–1.0).  The page number comes from
-the enclosing ``PAGE_BEGIN`` marker.
+IMAGE_AI_DESCRIPTION_BLOCK_RE = re.compile(
+    rf"<!--\s*{re.escape(IMAGE_AI_DESC_BEGIN.tag)}\s*-->"
+    r".*?"
+    rf"<!--\s*{re.escape(IMAGE_AI_DESC_END.tag)}\s*-->",
+    re.DOTALL,
+)
+"""Regex matching a full AI-generated description block (begin through end).
+
+Use for stripping AI-generated content before fidelity checks.
 """
 
 # ---------------------------------------------------------------------------

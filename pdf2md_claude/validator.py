@@ -20,11 +20,11 @@ from pathlib import Path
 
 from pdf2md_claude.markers import (
     IMAGE_AI_DESCRIPTION_BLOCK_RE,
-    IMAGE_BEGIN_RE,
-    IMAGE_END_RE,
+    IMAGE_BEGIN,
+    IMAGE_END,
     PAGE_BEGIN,
     PAGE_END,
-    PAGE_SKIP_RE,
+    PAGE_SKIP,
     TABLE_BLOCK_RE,
 )
 
@@ -67,8 +67,8 @@ _FIGURE_REF_RE = re.compile(r"\bFigure\s+(\d+|[A-Z]\.\d+)\b")
 _FIGURE_DEF_RE = re.compile(r"\*\*Figure\s+(\d+|[A-Z]\.\d+)\s*[–—-]")
 
 # Page markers: <!-- PDF_PAGE_BEGIN 42 --> / <!-- PDF_PAGE_END 42 -->
-_PAGE_MARKER_RE = PAGE_BEGIN.re
-_PAGE_END_MARKER_RE = PAGE_END.re
+_PAGE_MARKER_RE = PAGE_BEGIN.re_value
+_PAGE_END_MARKER_RE = PAGE_END.re_value
 
 # Known fabrication patterns — Claude's telltale signs of inventing content
 # instead of converting it from the PDF.
@@ -286,7 +286,7 @@ def check_page_fidelity(
 
         for page_num, md_content in sorted(page_contents.items()):
             # Skip pages with PAGE_SKIP marker.
-            if PAGE_SKIP_RE.search(md_content):
+            if PAGE_SKIP.re.search(md_content):
                 continue
 
             # Extract significant words from markdown.
@@ -339,7 +339,7 @@ def check_page_fidelity(
 
 def _count_skipped_pages(markdown: str) -> int:
     """Count pages containing a PDF_PAGE_SKIP marker."""
-    return len(PAGE_SKIP_RE.findall(markdown))
+    return len(PAGE_SKIP.re.findall(markdown))
 
 
 def _check_page_markers(markdown: str, result: ValidationResult) -> None:
@@ -435,7 +435,7 @@ def _check_image_block_pairing(markdown: str, result: ValidationResult) -> None:
         if page_match:
             current_page = int(page_match.group(1))
 
-        if IMAGE_BEGIN_RE.search(line):
+        if IMAGE_BEGIN.re.search(line):
             begin_count += 1
             if in_block:
                 loc = f" (page {open_page})" if open_page else ""
@@ -446,7 +446,7 @@ def _check_image_block_pairing(markdown: str, result: ValidationResult) -> None:
             in_block = True
             open_page = current_page
 
-        if IMAGE_END_RE.search(line):
+        if IMAGE_END.re.search(line):
             end_count += 1
             if not in_block:
                 result.errors.append(
