@@ -169,14 +169,28 @@ automatically in post-processing.
    - **Bounding box**: Immediately after `{_IB}`, emit an `IMAGE_RECT` \
 marker with normalized coordinates (0.0–1.0, origin at top-left, \
 x grows right, y grows down): \
-`<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->`. Example: `{_IR}`. \
-Estimate each edge from the outermost drawn elements of the figure \
-(lines, shapes, axis labels) — make the box as tight as possible \
-around the graphical content with minimal surrounding whitespace.
-   - **Bounding box scope** (CRITICAL): The box must cover ONLY the visual \
-content (diagram, chart, photo, illustration). Do NOT include the figure \
-caption, figure number label, or surrounding body text — only the \
-graphical region.
+`<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->`. Example: `{_IR}`.
+   - **Bounding box precision** (CRITICAL — read carefully): \
+Each edge must align with the outermost **drawn graphical primitive** \
+of the figure (lines, shapes, axes, arrows, data points). \
+Axis tick labels and data labels that are visually part of the graphic \
+are included. Post-processing adds a small padding margin, so aim for \
+the tightest box that still contains all graphical content — \
+err on the side of slightly tight rather than loose.
+     - **Top edge**: the topmost drawn element (e.g., top of a box, \
+highest axis tick, tallest bar). Do NOT extend upward into headings, \
+body text, page headers, or page numbers above the figure.
+     - **Bottom edge**: the bottommost drawn element (e.g., X-axis line, \
+lowest label of the graphic). Do NOT extend downward into the figure \
+caption or body text below.
+     - **Left / right edges**: the outermost drawn elements on each side.
+   - **Bounding box exclusions**: The box must NEVER include any of \
+the following — these are NOT part of the graphical content: \
+page numbers or running headers/footers; \
+figure captions in any language \
+(e.g., "Figure 3 – Dimming curve", "图 3. 调光曲线", "Рис. 3 — Кривая"); \
+figure number labels; section headings; \
+body text paragraphs above or below the figure.
    - **Caption**: Preserve the original caption exactly as it appears in \
 the PDF (e.g., "Figure 5 – Timing diagram") as a `**bold**` line inside \
 the image block.
