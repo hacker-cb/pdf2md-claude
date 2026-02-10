@@ -41,6 +41,9 @@ _RENDER_DPI = 600
 # to account for imprecision in Claude's coordinate estimates.
 _RECT_PADDING = 0.01
 
+_DEBUG_VARIANT_NAMES = ("auto", "snap", "bbox")
+"""Variant names produced per IMAGE block in debug mode."""
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -62,6 +65,9 @@ class ImageMode(Enum):
 
     BBOX = "bbox"
     """Render AI-based bounding box directly, skip raster matching."""
+
+    DEBUG = "debug"
+    """Render all variants (auto/snap/bbox) for side-by-side comparison."""
 
 
 @dataclass
@@ -98,6 +104,8 @@ class RenderedImage:
     """Image data (PNG, JPEG, etc.)."""
     filename: str
     """Filename (e.g. ``img_p005_01.png`` or ``img_p005_01.jpeg``)."""
+    info: str = ""
+    """Debug info string (populated only in debug mode)."""
 
 
 @dataclass
@@ -394,6 +402,94 @@ def _extract_native(
     return img_data["image"], img_data["ext"]
 
 
+def _render_debug_variants(
+    doc: pymupdf.Document,
+    page: pymupdf.Page,
+    clip: pymupdf.Rect,
+    ir: ImageRect,
+    matched: list[PageRaster],
+    dpi: int,
+) -> list[tuple[str, bytes, str, str]]:
+    """Produce all image variants for debug mode.
+
+    Returns a list of ``(variant_name, image_bytes, ext, info_string)``
+    tuples — one per variant (auto, snap, bbox).
+
+    Args:
+        doc: Open pymupdf Document.
+        page: The page being rendered.
+        clip: Claude's padded bounding-box rect (absolute points).
+        ir: Original ImageRect with normalized coordinates.
+        matched: Rasters overlapping the clip.
+        dpi: DPI for page-region renders.
+    """
+    variants: list[tuple[str, bytes, str, str]] = []
+
+    # Determine snap rect (raster placement or union or clip fallback).
+    if len(matched) == 1:
+        snap_rect = matched[0].rect
+    elif len(matched) > 1:
+        snap_rect = pymupdf.Rect(matched[0].rect)
+        for r in matched[1:]:
+            snap_rect |= r.rect
+        if snap_rect.is_empty or snap_rect.is_infinite:
+            snap_rect = clip
+    else:
+        snap_rect = clip  # no rasters → snap falls back to clip
+
+    # --- auto variant: native extract or snap fallback ---
+    auto_info = ""
+    if len(matched) == 1:
+        result = _extract_native(doc, matched[0])
+        if result is not None:
+            auto_bytes, auto_ext = result
+            auto_info = (
+                f"native {auto_ext} {matched[0].width}x{matched[0].height} px"
+            )
+        else:
+            auto_bytes, auto_ext = _render_region(page, snap_rect, dpi)
+            auto_info = (
+                f"native fallback → snap rect "
+                f"({snap_rect.x0:.0f},{snap_rect.y0:.0f},"
+                f"{snap_rect.x1:.0f},{snap_rect.y1:.0f}) @ {dpi} DPI"
+            )
+    elif len(matched) > 1:
+        auto_bytes, auto_ext = _render_region(page, snap_rect, dpi)
+        auto_info = (
+            f"composite ({len(matched)} rasters) → union rect "
+            f"({snap_rect.x0:.0f},{snap_rect.y0:.0f},"
+            f"{snap_rect.x1:.0f},{snap_rect.y1:.0f}) @ {dpi} DPI"
+        )
+    else:
+        auto_bytes, auto_ext = _render_region(page, clip, dpi)
+        auto_info = (
+            f"no rasters → bbox "
+            f"({clip.x0:.0f},{clip.y0:.0f},"
+            f"{clip.x1:.0f},{clip.y1:.0f}) @ {dpi} DPI"
+        )
+    variants.append(("auto", auto_bytes, auto_ext, auto_info))
+
+    # --- snap variant: render raster rect (or clip if no rasters) ---
+    snap_bytes, snap_ext = _render_region(page, snap_rect, dpi)
+    snap_info = (
+        f"snap rect ({snap_rect.x0:.0f},{snap_rect.y0:.0f},"
+        f"{snap_rect.x1:.0f},{snap_rect.y1:.0f}) @ {dpi} DPI"
+    )
+    variants.append(("snap", snap_bytes, snap_ext, snap_info))
+
+    # --- bbox variant: render Claude's raw padded bbox ---
+    bbox_bytes, bbox_ext = _render_region(page, clip, dpi)
+    bbox_info = (
+        f"bbox ({clip.x0:.0f},{clip.y0:.0f},"
+        f"{clip.x1:.0f},{clip.y1:.0f}) "
+        f"padded from ({ir.x0:.2f},{ir.y0:.2f},"
+        f"{ir.x1:.2f},{ir.y1:.2f}) @ {dpi} DPI"
+    )
+    variants.append(("bbox", bbox_bytes, bbox_ext, bbox_info))
+
+    return variants
+
+
 def render_image_rects(
     doc: pymupdf.Document,
     rects: list[ImageRect],
@@ -476,7 +572,32 @@ def render_image_rects(
                 continue
 
             dpi = _compute_render_dpi(render_dpi)
+            matched_list = matches[i]
+            img_idx = page_counters.get(page_num, 0)
+            page_counters[page_num] = img_idx + 1
+            base_idx = img_idx + 1
 
+            # --- DEBUG mode: produce all 3 variants per block --------
+            if image_mode is ImageMode.DEBUG:
+                _log.debug("      debug mode: generating all variants")
+                variants = _render_debug_variants(
+                    doc, page, clip, ir, matched_list, dpi,
+                )
+                for variant_name, img_bytes, ext, info in variants:
+                    fname = IMAGE_FILENAME_FORMAT.format(
+                        page=page_num, idx=base_idx,
+                        ext=f"{variant_name}.{ext}",
+                    )
+                    rendered.append(RenderedImage(
+                        page_num=page_num,
+                        index=img_idx,
+                        image_bytes=img_bytes,
+                        filename=fname,
+                        info=info,
+                    ))
+                continue
+
+            # --- Normal modes: single image per block ----------------
             # BBOX mode: render raw AI bounding box, skip matching.
             if image_mode is ImageMode.BBOX:
                 img_bytes, ext = _render_region(page, clip, dpi)
@@ -484,22 +605,19 @@ def render_image_rects(
                     "      bbox → render at %d DPI", dpi,
                 )
 
-            elif len(matches[i]) == 1:
-                matched = matches[i]
+            elif len(matched_list) == 1:
                 if image_mode is ImageMode.AUTO:
-                    # Try native extraction; fall back to rendering
-                    # the raster's placement rect.
-                    result = _extract_native(doc, matched[0])
+                    result = _extract_native(doc, matched_list[0])
                     if result is not None:
                         img_bytes, ext = result
                         _log.debug(
                             "      native extract: xref=%d, format=%s, "
                             "%dx%d px",
-                            matched[0].xref, ext,
-                            matched[0].width, matched[0].height,
+                            matched_list[0].xref, ext,
+                            matched_list[0].width, matched_list[0].height,
                         )
                     else:
-                        snap = matched[0].rect
+                        snap = matched_list[0].rect
                         img_bytes, ext = _render_region(page, snap, dpi)
                         _log.debug(
                             "      native fallback → render raster rect "
@@ -507,17 +625,15 @@ def render_image_rects(
                             dpi,
                         )
                 else:
-                    # SNAP mode: always render the raster's placement
-                    # rect (precise bounds from PDF structure).
-                    snap = matched[0].rect
+                    # SNAP mode.
+                    snap = matched_list[0].rect
                     img_bytes, ext = _render_region(page, snap, dpi)
                     _log.debug(
                         "      snap raster rect at %d DPI", dpi,
                     )
 
-            elif len(matches[i]) > 1:
-                # Composite: union of all matched rasters.
-                matched = matches[i]
+            elif len(matched_list) > 1:
+                matched = matched_list
                 union = pymupdf.Rect(matched[0].rect)
                 for r in matched[1:]:
                     union |= r.rect
@@ -530,18 +646,14 @@ def render_image_rects(
                 )
 
             else:
-                # No rasters matched: render Claude's bbox.
                 img_bytes, ext = _render_region(page, clip, dpi)
                 reason = "no rasters on page" if not page_rasters else "unmatched"
                 _log.debug(
                     "      %s → render bbox at %d DPI", reason, dpi,
                 )
 
-            img_idx = page_counters.get(page_num, 0)
-            page_counters[page_num] = img_idx + 1
-
             filename = IMAGE_FILENAME_FORMAT.format(
-                page=page_num, idx=img_idx + 1, ext=ext,
+                page=page_num, idx=base_idx, ext=ext,
             )
             rendered.append(RenderedImage(
                 page_num=page_num,
@@ -599,6 +711,8 @@ def inject_image_refs(
     markdown: str,
     image_map: dict[int, list[str]],
     rel_prefix: str,
+    image_mode: ImageMode = ImageMode.AUTO,
+    info_map: dict[str, str] | None = None,
 ) -> str:
     """Inject ``![caption](path)`` references into ``IMAGE_BEGIN`` blocks.
 
@@ -607,6 +721,9 @@ def inject_image_refs(
     Then inserts an image reference after the caption, using the next
     available filename for that page from *image_map*.
 
+    In debug mode, injects an HTML comparison table with all variants
+    instead of a single image reference.
+
     Blocks that already contain an image reference (detected via
     ``IMAGE_REF_RE``) are skipped (idempotent).
 
@@ -614,6 +731,8 @@ def inject_image_refs(
         markdown: Full markdown text with ``IMAGE_BEGIN`` blocks.
         image_map: ``{page_num: [filename, ...]}`` from :func:`save_images`.
         rel_prefix: Relative path prefix (e.g. ``"docling.images"``).
+        image_mode: Extraction strategy — affects injection format.
+        info_map: ``{filename: info_string}`` for debug mode overlay text.
 
     Returns:
         Updated markdown with image references injected.
@@ -653,6 +772,7 @@ def inject_image_refs(
                 _process_image_block(
                     block_buffer, current_page, image_map,
                     page_consumed, rel_prefix,
+                    image_mode=image_mode, info_map=info_map,
                 )
             )
             block_buffer = None
@@ -678,11 +798,15 @@ def _process_image_block(
     image_map: dict[int, list[str]],
     page_consumed: dict[int, int],
     rel_prefix: str,
+    image_mode: ImageMode = ImageMode.AUTO,
+    info_map: dict[str, str] | None = None,
 ) -> list[str]:
     """Process a single IMAGE_BEGIN..IMAGE_END block.
 
     If the block already contains an image reference, returns it unchanged.
     Otherwise, finds the bold caption line and inserts a reference after it.
+
+    In debug mode, injects an HTML comparison table with all 3 variants.
     """
     # Check idempotency: if block already has an image ref, return as-is.
     for line in block_lines:
@@ -694,11 +818,14 @@ def _process_image_block(
 
     filenames = image_map.get(current_page, [])
     consumed = page_consumed.get(current_page, 0)
-    if consumed >= len(filenames):
+
+    # Debug mode consumes 3 filenames per block; normal mode consumes 1.
+    needed = len(_DEBUG_VARIANT_NAMES) if image_mode is ImageMode.DEBUG else 1
+    if consumed + needed > len(filenames):
         _log.warning(
             "  No image file for IMAGE block on page %d "
-            "(consumed %d of %d available)",
-            current_page, consumed, len(filenames),
+            "(consumed %d of %d available, need %d)",
+            current_page, consumed, len(filenames), needed,
         )
         return block_lines
 
@@ -710,15 +837,60 @@ def _process_image_block(
         if not injected:
             bold_match = _BOLD_LINE_RE.match(line.strip())
             if bold_match:
-                fname = filenames[consumed]
-                page_consumed[current_page] = consumed + 1
-
                 caption_text = bold_match.group(1)
-                output.append("")
-                output.append(f"![{caption_text}]({rel_prefix}/{fname})")
+
+                if image_mode is ImageMode.DEBUG:
+                    # Consume 3 filenames and build comparison table.
+                    n_variants = len(_DEBUG_VARIANT_NAMES)
+                    variant_fnames = filenames[consumed:consumed + n_variants]
+                    page_consumed[current_page] = consumed + n_variants
+                    output.append("")
+                    output.append(_build_debug_table(
+                        variant_fnames, rel_prefix,
+                        info_map or {},
+                    ))
+                else:
+                    # Normal: single image reference.
+                    fname = filenames[consumed]
+                    page_consumed[current_page] = consumed + 1
+                    output.append("")
+                    output.append(f"![{caption_text}]({rel_prefix}/{fname})")
+
                 injected = True
 
     return output
+
+
+def _build_debug_table(
+    filenames: list[str],
+    rel_prefix: str,
+    info_map: dict[str, str],
+) -> str:
+    """Build an HTML comparison table for debug mode image variants.
+
+    Args:
+        filenames: List of variant filenames (auto, snap, bbox).
+        rel_prefix: Relative path prefix for image src.
+        info_map: ``{filename: info_string}`` with debug metadata.
+    """
+    rows: list[str] = []
+    rows.append("<table>")
+    rows.append("<tr><th>Mode</th><th>Image</th><th>Info</th></tr>")
+
+    for fname in filenames:
+        # Extract variant name from sub-extension: img_p004_01.auto.png → "auto"
+        parts = fname.split(".")
+        variant = parts[1] if len(parts) >= 3 else "?"
+        info = info_map.get(fname, "")
+        src = f"{rel_prefix}/{fname}"
+        rows.append(
+            f'<tr><td>{variant}</td>'
+            f'<td><img src="{src}"></td>'
+            f'<td><small>{info}</small></td></tr>'
+        )
+
+    rows.append("</table>")
+    return "\n".join(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -771,4 +943,12 @@ def extract_and_inject_images(
     image_map = save_images(rendered, output_dir)
     rel_prefix = output_dir.name
 
-    return inject_image_refs(markdown, image_map, rel_prefix)
+    # Build debug info map if needed.
+    info_map: dict[str, str] | None = None
+    if image_mode is ImageMode.DEBUG:
+        info_map = {ri.filename: ri.info for ri in rendered if ri.info}
+
+    return inject_image_refs(
+        markdown, image_map, rel_prefix,
+        image_mode=image_mode, info_map=info_map,
+    )

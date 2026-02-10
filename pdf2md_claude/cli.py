@@ -188,7 +188,8 @@ Examples:
         help="Image extraction mode: 'auto' extracts native rasters when "
              "possible with render fallback; 'snap' renders page regions "
              "snapped to PDF raster bounds; 'bbox' renders AI-based "
-             "bounding box directly (default: %(default)s).",
+             "bounding box directly; 'debug' renders all variants "
+             "side-by-side in an HTML table (default: %(default)s).",
     )
     parser.add_argument(
         "--image-dpi",

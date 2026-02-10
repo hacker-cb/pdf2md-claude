@@ -264,9 +264,11 @@ IMAGE_FILENAME_RE = re.compile(r"img_p(\d{3})_(\d{2})\.(\w+)")
 Captures ``(page, index, extension)``.
 """
 
-IMAGE_REF_RE = re.compile(r"!\[([^\]]*)\]\(([^)]*?/img_p\d{3}_\d{2}\.\w+)\)")
+IMAGE_REF_RE = re.compile(r"!\[([^\]]*)\]\(([^)]*?/img_p\d{3}_\d{2}\.[\w.]+)\)")
 """Regex matching a markdown image reference to an extracted image.
 
-Captures ``(alt_text, full_path)``.  Used for idempotent injection
+Captures ``(alt_text, full_path)``.  Matches both single-extension
+filenames (``img_p001_01.png``) and sub-extension filenames used by
+debug mode (``img_p001_01.auto.png``).  Used for idempotent injection
 (skip blocks that already contain a reference).
 """
