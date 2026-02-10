@@ -167,8 +167,12 @@ Do NOT output `![...](...)` references — image files are generated \
 automatically in post-processing.
    - Wrap the entire image block with `{_IB}` and `{_IE}` markers.
    - **Bounding box**: Immediately after `{_IB}`, emit an `IMAGE_RECT` \
-marker with normalized coordinates (0.0–1.0, origin at top-left): \
-`<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->`. Example: `{_IR}`.
+marker with normalized coordinates (0.0–1.0, origin at top-left, \
+x grows right, y grows down): \
+`<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->`. Example: `{_IR}`. \
+Estimate each edge from the outermost drawn elements of the figure \
+(lines, shapes, axis labels) — make the box as tight as possible \
+around the graphical content with minimal surrounding whitespace.
    - **Bounding box scope** (CRITICAL): The box must cover ONLY the visual \
 content (diagram, chart, photo, illustration). Do NOT include the figure \
 caption, figure number label, or surrounding body text — only the \
