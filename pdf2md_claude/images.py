@@ -676,7 +676,9 @@ def save_images(
 ) -> dict[int, list[str]]:
     """Save rendered images to disk.
 
-    Creates ``output_dir`` if it does not exist.
+    Creates ``output_dir`` if it does not exist.  Any pre-existing image
+    files in the directory are removed first to prevent stale leftovers
+    from previous runs (e.g. switching between image modes).
 
     Args:
         rendered: Images from :func:`render_image_rects`.
@@ -690,6 +692,11 @@ def save_images(
         return {}
 
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Remove stale images from previous runs.
+    for old in output_dir.iterdir():
+        if old.is_file():
+            old.unlink()
 
     page_filenames: dict[int, list[str]] = {}
     for ri in rendered:
