@@ -16,7 +16,7 @@ from pathlib import Path
 import anthropic
 
 from pdf2md_claude.converter import ConversionResult, convert_pdf
-from pdf2md_claude.images import extract_and_inject_images
+from pdf2md_claude.images import ImageMode, extract_and_inject_images
 from pdf2md_claude.merger import merge_chunks, merge_continued_tables
 from pdf2md_claude.models import DocumentUsageStats, ModelConfig
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
@@ -53,6 +53,8 @@ def convert_document(
     use_cache: bool = False,
     force: bool = False,
     extract_images: bool = True,
+    image_mode: ImageMode = ImageMode.AUTO,
+    image_dpi: int | None = None,
     system_prompt: str | None = None,
 ) -> PipelineResult:
     """Run the full conversion pipeline for a single PDF.
@@ -116,6 +118,7 @@ def convert_document(
         images_dir = output_file.with_name(output_file.stem + _IMAGE_DIR_SUFFIX)
         markdown = extract_and_inject_images(
             pdf_path, markdown, images_dir,
+            image_mode=image_mode, render_dpi=image_dpi,
         )
 
     # 5. Validate output.
@@ -152,6 +155,8 @@ def remerge_document(
     output_file: Path,
     pdf_path: Path | None = None,
     extract_images: bool = True,
+    image_mode: ImageMode = ImageMode.AUTO,
+    image_dpi: int | None = None,
 ) -> PipelineResult:
     """Re-run merge + validate + write from cached chunks on disk.
 
@@ -221,6 +226,7 @@ def remerge_document(
         images_dir = output_file.with_name(output_file.stem + _IMAGE_DIR_SUFFIX)
         markdown = extract_and_inject_images(
             pdf_path, markdown, images_dir,
+            image_mode=image_mode, render_dpi=image_dpi,
         )
 
     # 5. Validate output.

@@ -1,13 +1,22 @@
 """Unit tests for the images module (IMAGE_RECT parsing, rendering, injection)."""
 
 import re
+from unittest.mock import MagicMock, patch
 
+import pymupdf
 import pytest
 
 from pdf2md_claude.images import (
     ImageRect,
+    PageRaster,
+    _compute_render_dpi,
+    _extract_native,
+    _match_rasters_to_blocks,
+    _render_region,
+    _RENDER_DPI,
     inject_image_refs,
     parse_image_rects,
+    render_image_rects,
 )
 from pdf2md_claude.markers import (
     IMAGE_FILENAME_EXAMPLE,
@@ -118,10 +127,10 @@ class TestImageFilenamePatterns:
     """Tests for image filename format and regex."""
 
     def test_format_basic(self):
-        assert IMAGE_FILENAME_FORMAT.format(page=1, idx=1) == "img_p001_01.png"
+        assert IMAGE_FILENAME_FORMAT.format(page=1, idx=1, ext="png") == "img_p001_01.png"
 
     def test_format_large_numbers(self):
-        assert IMAGE_FILENAME_FORMAT.format(page=123, idx=5) == "img_p123_05.png"
+        assert IMAGE_FILENAME_FORMAT.format(page=123, idx=5, ext="png") == "img_p123_05.png"
 
     def test_example_matches_regex(self):
         """IMAGE_FILENAME_EXAMPLE must match IMAGE_FILENAME_RE."""
@@ -131,7 +140,7 @@ class TestImageFilenamePatterns:
 
     def test_example_matches_format_output(self):
         """IMAGE_FILENAME_EXAMPLE must equal what FORMAT produces."""
-        assert IMAGE_FILENAME_FORMAT.format(page=1, idx=1) == IMAGE_FILENAME_EXAMPLE
+        assert IMAGE_FILENAME_FORMAT.format(page=1, idx=1, ext="png") == IMAGE_FILENAME_EXAMPLE
 
     def test_regex_captures_groups(self):
         m = IMAGE_FILENAME_RE.search("img_p042_03.png")
@@ -469,3 +478,285 @@ class TestInjectImageRefs:
         result2 = inject_image_refs(md, {1: ["img_p001_01.png"]}, "test.images")
         # Caption exists on page 1 so it should inject.
         assert "![Figure 1: No rect](test.images/img_p001_01.png)" in result2
+
+
+# ---------------------------------------------------------------------------
+# _compute_render_dpi()
+# ---------------------------------------------------------------------------
+
+
+class TestComputeRenderDpi:
+    """Tests for render DPI."""
+
+    def test_returns_fixed_render_dpi(self):
+        """No override → returns the _RENDER_DPI constant (600)."""
+        assert _compute_render_dpi() == _RENDER_DPI
+        assert _compute_render_dpi() == 600
+
+    def test_override_returns_custom_dpi(self):
+        """Explicit override → returns the given value."""
+        assert _compute_render_dpi(300) == 300
+        assert _compute_render_dpi(150) == 150
+
+
+# ---------------------------------------------------------------------------
+# _match_rasters_to_blocks()
+# ---------------------------------------------------------------------------
+
+
+def _make_raster(x0, y0, x1, y1, xref=1, smask=0, width=100, height=100):
+    """Helper to create a PageRaster with given placement rect."""
+    return PageRaster(
+        xref=xref, smask=smask, width=width, height=height,
+        rect=pymupdf.Rect(x0, y0, x1, y1),
+    )
+
+
+class TestMatchRastersToBlocks:
+    """Tests for the rewritten overlap-based matching."""
+
+    def test_zero_rasters_all_empty(self):
+        clips = [pymupdf.Rect(0, 0, 100, 100), pymupdf.Rect(100, 0, 200, 100)]
+        result = _match_rasters_to_blocks([], clips)
+        assert result == {0: [], 1: []}
+
+    def test_one_raster_overlapping_one_of_two_blocks(self):
+        r = _make_raster(10, 10, 90, 90, xref=42)
+        clip_a = pymupdf.Rect(0, 0, 100, 100)    # overlaps
+        clip_b = pymupdf.Rect(200, 200, 300, 300)  # no overlap
+        result = _match_rasters_to_blocks([r], [clip_a, clip_b])
+        assert len(result[0]) == 1
+        assert result[0][0].xref == 42
+        assert result[1] == []
+
+    def test_two_rasters_one_block_composite(self):
+        r1 = _make_raster(10, 10, 50, 50, xref=1)
+        r2 = _make_raster(60, 10, 90, 50, xref=2)
+        clip = pymupdf.Rect(0, 0, 100, 100)
+        result = _match_rasters_to_blocks([r1, r2], [clip])
+        assert len(result[0]) == 2
+
+    def test_two_rasters_two_blocks_each_own(self):
+        r1 = _make_raster(10, 10, 90, 90, xref=1)
+        r2 = _make_raster(210, 10, 290, 90, xref=2)
+        clip_a = pymupdf.Rect(0, 0, 100, 100)
+        clip_b = pymupdf.Rect(200, 0, 300, 100)
+        result = _match_rasters_to_blocks([r1, r2], [clip_a, clip_b])
+        assert len(result[0]) == 1
+        assert result[0][0].xref == 1
+        assert len(result[1]) == 1
+        assert result[1][0].xref == 2
+
+    def test_raster_no_overlap_not_included(self):
+        r = _make_raster(500, 500, 600, 600, xref=99)
+        clip = pymupdf.Rect(0, 0, 100, 100)
+        result = _match_rasters_to_blocks([r], [clip])
+        assert result[0] == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-format filenames
+# ---------------------------------------------------------------------------
+
+
+class TestFilenameMultiFormat:
+    """Tests for multi-format filename support."""
+
+    def test_format_jpeg(self):
+        assert IMAGE_FILENAME_FORMAT.format(page=1, idx=1, ext="jpeg") == "img_p001_01.jpeg"
+
+    def test_regex_matches_jpeg(self):
+        m = IMAGE_FILENAME_RE.search("img_p001_01.jpeg")
+        assert m is not None
+        assert m.group(3) == "jpeg"
+
+    def test_ref_regex_matches_jpeg(self):
+        line = "![Figure 1](test.images/img_p001_01.jpeg)"
+        m = IMAGE_REF_RE.search(line)
+        assert m is not None
+        assert m.group(1) == "Figure 1"
+
+
+# ---------------------------------------------------------------------------
+# _extract_native()
+# ---------------------------------------------------------------------------
+
+
+class TestExtractNative:
+    """Tests for native raster extraction."""
+
+    def test_extract_image_returns_none_fallback(self):
+        """extract_image returning None → _extract_native returns None."""
+        doc = MagicMock()
+        doc.extract_image.return_value = None
+        raster = _make_raster(0, 0, 100, 100, xref=5)
+        assert _extract_native(doc, raster) is None
+
+    def test_normal_extraction_no_smask(self):
+        """Normal extraction, no smask → native bytes."""
+        doc = MagicMock()
+        doc.extract_image.return_value = {
+            "image": b"JPEG_DATA",
+            "ext": "jpeg",
+            "width": 200,
+            "height": 150,
+        }
+        raster = _make_raster(0, 0, 100, 75, xref=10, width=200, height=150)
+        result = _extract_native(doc, raster)
+        assert result is not None
+        img_bytes, ext = result
+        assert img_bytes == b"JPEG_DATA"
+        assert ext == "jpeg"
+
+    def test_smask_composites_returns_png(self):
+        """Smask present → compositing path → returns PNG."""
+        doc = MagicMock()
+        doc.extract_image.return_value = {"image": b"data", "ext": "png"}
+
+        # Mock pymupdf.Pixmap constructor — we need to patch at module level
+        raster = _make_raster(0, 0, 100, 100, xref=10, smask=20, width=100, height=100)
+
+        with patch("pdf2md_claude.images.pymupdf") as mock_pymupdf:
+            base_pix = MagicMock()
+            mask_pix = MagicMock()
+            combined_pix = MagicMock()
+            combined_pix.n = 3
+            combined_pix.alpha = 0
+            combined_pix.tobytes.return_value = b"PNG_COMPOSITED"
+
+            # Pixmap(doc, xref) calls
+            def pixmap_factory(*args, **kwargs):
+                if len(args) == 2:
+                    if args[1] == 10:
+                        return base_pix
+                    if args[1] == 20:
+                        return mask_pix
+                    return combined_pix
+                return combined_pix
+
+            mock_pymupdf.Pixmap.side_effect = pixmap_factory
+            mock_pymupdf.csRGB = pymupdf.csRGB
+
+            # Re-import to get the patched version
+            from pdf2md_claude.images import _extract_native as fn
+            result = fn(doc, raster)
+
+        assert result is not None
+        assert result[1] == "png"
+
+    def test_high_dpi_native_still_extracted(self):
+        """High-DPI native image (600 DPI) → still extracted natively.
+
+        Native bytes are already compressed — no DPI cap applied.
+        """
+        doc = MagicMock()
+        doc.extract_image.return_value = {
+            "image": b"HIGHRES_JPEG",
+            "ext": "jpeg",
+            "width": 600,
+            "height": 600,
+        }
+        # 600px / (72pt / 72) = 600 DPI — should still extract natively
+        raster = _make_raster(0, 0, 72, 72, xref=1, width=600, height=600)
+        result = _extract_native(doc, raster)
+        assert result is not None
+        assert result[0] == b"HIGHRES_JPEG"
+        assert result[1] == "jpeg"
+
+
+# ---------------------------------------------------------------------------
+# _render_region()
+# ---------------------------------------------------------------------------
+
+
+class TestRenderRegion:
+    """Tests for page region rendering helper."""
+
+    def test_normal_rgb_returns_png(self):
+        """Normal RGB pixmap → PNG bytes."""
+        page = MagicMock()
+        pix = MagicMock()
+        pix.n = 3
+        pix.alpha = 0
+        pix.tobytes.return_value = b"\x89PNG_DATA"
+        page.get_pixmap.return_value = pix
+
+        img_bytes, ext = _render_region(page, pymupdf.Rect(0, 0, 100, 100), 150)
+        assert ext == "png"
+        assert img_bytes == b"\x89PNG_DATA"
+        page.get_pixmap.assert_called_once()
+
+    def test_cmyk_converted_to_rgb(self):
+        """CMYK pixmap (n - alpha > 3) → converted to RGB then PNG."""
+        page = MagicMock()
+        cmyk_pix = MagicMock()
+        cmyk_pix.n = 5  # CMYK + alpha
+        cmyk_pix.alpha = 1  # 5 - 1 = 4 > 3 → CMYK
+        page.get_pixmap.return_value = cmyk_pix
+
+        with patch("pdf2md_claude.images.pymupdf") as mock_pymupdf:
+            rgb_pix = MagicMock()
+            rgb_pix.n = 3
+            rgb_pix.alpha = 0
+            rgb_pix.tobytes.return_value = b"RGB_PNG"
+            mock_pymupdf.Pixmap.return_value = rgb_pix
+            mock_pymupdf.csRGB = pymupdf.csRGB
+
+            from pdf2md_claude.images import _render_region as fn
+            img_bytes, ext = fn(page, pymupdf.Rect(0, 0, 100, 100), 150)
+
+        assert ext == "png"
+        assert img_bytes == b"RGB_PNG"
+
+
+# ---------------------------------------------------------------------------
+# render_image_rects() edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRenderImageRectsEdgeCases:
+    """Edge case tests for the main render function."""
+
+    def test_empty_rects_returns_empty(self):
+        """Empty rects list → returns []."""
+        doc = MagicMock()
+        assert render_image_rects(doc, []) == []
+
+    def test_page_out_of_range_skips(self):
+        """Page number out of range → logs warning, skips, doesn't crash."""
+        doc = MagicMock()
+        doc.__len__ = MagicMock(return_value=5)
+        rects = [ImageRect(page_num=99, x0=0, y0=0, x1=1, y1=1)]
+        result = render_image_rects(doc, rects)
+        assert result == []
+
+    def test_degenerate_union_falls_back_to_clip(self):
+        """Multiple matched rasters with degenerate union → falls back to clip."""
+        doc = MagicMock()
+        doc.__len__ = MagicMock(return_value=10)
+
+        page = MagicMock()
+        page.rect = pymupdf.Rect(0, 0, 612, 792)
+
+        doc.__getitem__ = MagicMock(return_value=page)
+
+        # Mock _index_page_rasters to return two rasters with overlapping rects
+        rasters = [
+            _make_raster(10, 10, 90, 90, xref=1),
+            _make_raster(20, 20, 80, 80, xref=2),
+        ]
+
+        # Mock page.get_pixmap for the render path
+        pix = MagicMock()
+        pix.n = 3
+        pix.alpha = 0
+        pix.tobytes.return_value = b"\x89PNG"
+        page.get_pixmap.return_value = pix
+
+        ir = ImageRect(page_num=1, x0=0.01, y0=0.01, x1=0.15, y1=0.12)
+
+        with patch("pdf2md_claude.images._index_page_rasters", return_value=rasters):
+            result = render_image_rects(doc, [ir])
+
+        assert len(result) == 1
+        assert result[0].image_bytes == b"\x89PNG"

@@ -1,14 +1,16 @@
 """Image extraction and injection for PDF-to-Markdown conversion.
 
-Two-phase workflow:
+Three-phase workflow:
 
 1. **Claude provides bounding boxes** via ``IMAGE_RECT`` markers in the
    markdown output (normalized 0.0–1.0 coordinates).
-2. **Post-processing renders** those regions from the PDF using pymupdf
-   and injects ``![caption](path)`` references into the markdown.
+2. **Post-processing extracts or renders** those regions from the PDF
+   using pymupdf — native raster extraction when possible, page-region
+   rendering for vector/composite content.
+3. **Injection** inserts ``![caption](path)`` references into the markdown.
 
-This handles raster images, vector diagrams, and mixed content — anything
-that pymupdf can render from a PDF page region.
+Handles raster images (native extraction preserving original format),
+vector diagrams, composite/tiled figures, and mixed content.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import pymupdf
@@ -31,8 +34,8 @@ from pdf2md_claude.markers import (
 
 _log = logging.getLogger("images")
 
-DEFAULT_IMAGE_DPI = 150
-"""Default DPI for rendering image regions from PDF pages."""
+_RENDER_DPI = 600
+"""DPI for page-region renders (vector diagrams, composites, fallbacks)."""
 
 # Small padding (fraction of page size) added around each bounding box
 # to account for imprecision in Claude's coordinate estimates.
@@ -42,6 +45,23 @@ _RECT_PADDING = 0.01
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
+
+
+class ImageMode(Enum):
+    """Image extraction strategy.
+
+    Controls whether images are extracted natively from the PDF or
+    rendered as page-region screenshots.
+    """
+
+    AUTO = "auto"
+    """Try native raster extraction first; fall back to page rendering."""
+
+    SNAP = "snap"
+    """Render page regions snapped to PDF raster bounds, never extract native."""
+
+    BBOX = "bbox"
+    """Render AI-based bounding box directly, skip raster matching."""
 
 
 @dataclass
@@ -68,16 +88,36 @@ class ImageRect:
 
 @dataclass
 class RenderedImage:
-    """An image rendered from a PDF page region."""
+    """An image extracted or rendered from a PDF page region."""
 
     page_num: int
     """1-indexed PDF page number."""
     index: int
     """0-based index among images on the same page."""
     image_bytes: bytes
-    """PNG image data."""
+    """Image data (PNG, JPEG, etc.)."""
     filename: str
-    """Filename (e.g. ``img_p005_01.png``)."""
+    """Filename (e.g. ``img_p005_01.png`` or ``img_p005_01.jpeg``)."""
+
+
+@dataclass
+class PageRaster:
+    """A significant raster image embedded in a PDF page.
+
+    Produced by :func:`_index_page_rasters` and used internally for
+    matching and native extraction.  Not part of the public API.
+    """
+
+    xref: int
+    """Image object cross-reference number for ``doc.extract_image()``."""
+    smask: int
+    """Soft-mask xref (0 = no transparency mask)."""
+    width: int
+    """Native pixel width of the embedded image."""
+    height: int
+    """Native pixel height of the embedded image."""
+    rect: pymupdf.Rect
+    """Placement rectangle on the page (absolute points)."""
 
 
 # ---------------------------------------------------------------------------
@@ -181,13 +221,17 @@ def _rects_overlap_area(a: pymupdf.Rect, b: pymupdf.Rect) -> float:
     return (ix1 - ix0) * (iy1 - iy0)
 
 
-def _get_significant_rasters(page: pymupdf.Page) -> list[pymupdf.Rect]:
-    """Return bounding rects of significant raster images on *page*.
+def _index_page_rasters(page: pymupdf.Page) -> list[PageRaster]:
+    """Return significant raster images embedded on *page*.
 
-    Filters out tiny images (icons, bullets, decorations) whose area is
-    less than ``_MIN_IMAGE_AREA_FRACTION`` of the page area.
+    Calls ``page.get_images(full=True)`` and ``page.get_image_rects()``
+    to collect placement metadata for each image.  Filters out tiny images
+    (icons, bullets, decorations) whose area is less than
+    ``_MIN_IMAGE_AREA_FRACTION`` of the page area.
 
-    Called once per page during the collect pass.
+    One image xref can have multiple placement rects on a page (same
+    image placed at different positions); each placement produces a
+    separate :class:`PageRaster` entry.
     """
     page_area = page.rect.width * page.rect.height
     if page_area <= 0:
@@ -198,8 +242,15 @@ def _get_significant_rasters(page: pymupdf.Page) -> list[pymupdf.Rect]:
     except Exception:
         return []
 
-    rasters: list[pymupdf.Rect] = []
+    # get_images(full=True) returns tuples:
+    # (xref, smask, width, height, bpc, colorspace, ...)
+    rasters: list[PageRaster] = []
     for img in images:
+        xref = img[0]
+        smask = img[1]
+        img_width = img[2]
+        img_height = img[3]
+
         try:
             img_rects = page.get_image_rects(img)
         except Exception:
@@ -209,78 +260,45 @@ def _get_significant_rasters(page: pymupdf.Page) -> list[pymupdf.Rect]:
                 continue
             img_area = r.width * r.height
             if img_area / page_area >= _MIN_IMAGE_AREA_FRACTION:
-                rasters.append(r)
+                rasters.append(PageRaster(
+                    xref=xref,
+                    smask=smask,
+                    width=img_width,
+                    height=img_height,
+                    rect=r,
+                ))
 
     return rasters
 
 
 def _match_rasters_to_blocks(
-    rasters: list[pymupdf.Rect],
+    rasters: list[PageRaster],
     clips: list[pymupdf.Rect],
-) -> dict[int, pymupdf.Rect | None]:
-    """Match PDF raster images to IMAGE blocks using structural rules.
+) -> dict[int, list[PageRaster]]:
+    """Match PDF raster images to IMAGE blocks by overlap.
 
-    Decision rules (ordered by priority):
-
-    - **0 rasters** — all blocks get ``None`` (raw bbox).
-    - **1 raster** — 100% certain match.  Assign to the
-      best-overlapping block; other blocks (if any) get ``None``.
-    - **N rasters, 1 block** — composite figure suspicion; block
-      gets ``None`` (raw bbox).
-    - **N rasters, M blocks (M >= 2)** — greedy 1:1 assignment by
-      best overlap area.  Unmatched blocks get ``None``.
+    For each block clip, collects every raster whose placement rect has
+    nonzero overlap with the clip.  The three-way rendering decision
+    (single raster / composite / vector) is made by the caller based on
+    ``len(matched)``.
 
     Args:
-        rasters: Significant raster rects on the page.
+        rasters: Significant rasters on the page from
+            :func:`_index_page_rasters`.
         clips: Claude's padded bounding-box rects (one per IMAGE block).
 
     Returns:
-        ``{block_index: matched_raster_rect_or_None}``.
+        ``{block_index: [overlapping PageRasters]}`` — empty list means
+        no rasters overlap the block (pure vector / no rasters on page).
     """
-    n_rasters = len(rasters)
-    n_blocks = len(clips)
-    result: dict[int, pymupdf.Rect | None] = {i: None for i in range(n_blocks)}
+    result: dict[int, list[PageRaster]] = {
+        i: [] for i in range(len(clips))
+    }
 
-    if n_rasters == 0 or n_blocks == 0:
-        return result
-
-    # --- 1 raster: guaranteed match -----------------------------------------
-    if n_rasters == 1:
-        # Assign to the block with the best overlap.
-        best_idx = 0
-        best_overlap = 0.0
-        for i, clip in enumerate(clips):
-            overlap = _rects_overlap_area(rasters[0], clip)
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_idx = i
-        result[best_idx] = rasters[0]
-        return result
-
-    # --- N rasters, 1 block: composite figure --------------------------------
-    if n_blocks == 1:
-        # Multiple rasters for a single figure block = composite.
-        return result
-
-    # --- N rasters, M blocks (M >= 2): greedy 1:1 ----------------------------
-    # Build all (block, raster) pairs sorted by overlap descending.
-    pairs: list[tuple[float, int, int]] = []  # (overlap, block_idx, raster_idx)
     for bi, clip in enumerate(clips):
-        for ri, raster in enumerate(rasters):
-            overlap = _rects_overlap_area(clip, raster)
-            if overlap > 0:
-                pairs.append((overlap, bi, ri))
-
-    pairs.sort(reverse=True)
-
-    used_blocks: set[int] = set()
-    used_rasters: set[int] = set()
-    for _overlap, bi, ri in pairs:
-        if bi in used_blocks or ri in used_rasters:
-            continue
-        result[bi] = rasters[ri]
-        used_blocks.add(bi)
-        used_rasters.add(ri)
+        for raster in rasters:
+            if _rects_overlap_area(clip, raster.rect) > 0:
+                result[bi].append(raster)
 
     return result
 
@@ -299,149 +317,238 @@ def _compute_padded_clip(
     return pymupdf.Rect(x0, y0, x1, y1)
 
 
-def render_image_rects(
-    pdf_path: Path,
-    rects: list[ImageRect],
-    dpi: int = DEFAULT_IMAGE_DPI,
-) -> list[RenderedImage]:
-    """Render image regions from a PDF using pymupdf.
-
-    Uses a two-pass approach:
-
-    **Pass 1 — Collect**: For each page that has IMAGE blocks, fetch all
-    significant raster images (once per page) and compute padded clip rects.
-
-    **Pass 2 — Match & render**: Use :func:`_match_rasters_to_blocks` to
-    structurally assign rasters to blocks.  Matched blocks snap to the
-    raster's exact boundaries; unmatched blocks use Claude's raw bbox.
+def _compute_render_dpi(override: int | None = None) -> int:
+    """Return the DPI for page-region rendering.
 
     Args:
-        pdf_path: Path to the source PDF.
-        rects: Parsed bounding boxes from ``IMAGE_RECT`` markers.
-        dpi: Resolution for rendering (default 150).
+        override: Explicit DPI from CLI ``--image-dpi``.  When ``None``,
+            falls back to the module-level ``_RENDER_DPI`` constant.
+    """
+    return override if override is not None else _RENDER_DPI
+
+
+def _pixmap_to_png(pix: pymupdf.Pixmap) -> bytes:
+    """Convert a pymupdf Pixmap to PNG bytes, handling CMYK→RGB.
+
+    If the pixmap has more than 3 color channels (excluding alpha),
+    it is converted to sRGB before encoding.
+    """
+    if pix.n - pix.alpha > 3:
+        pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+    return pix.tobytes("png")
+
+
+def _render_region(
+    page: pymupdf.Page,
+    clip: pymupdf.Rect,
+    dpi: int,
+) -> tuple[bytes, str]:
+    """Render a page region to PNG at the given DPI.
+
+    Handles CMYK→RGB conversion via :func:`_pixmap_to_png`.
 
     Returns:
-        List of :class:`RenderedImage` with PNG data and filenames.
+        ``(png_bytes, "png")``.
+    """
+    pix = page.get_pixmap(clip=clip, dpi=dpi)
+    return _pixmap_to_png(pix), "png"
+
+
+def _extract_native(
+    doc: pymupdf.Document,
+    raster: PageRaster,
+) -> tuple[bytes, str] | None:
+    """Try to extract a raster image natively from the PDF.
+
+    Native extraction preserves the original image format (JPEG, PNG,
+    etc.) and resolution, avoiding re-encoding losses.  The image is
+    returned at its original resolution regardless of DPI — native bytes
+    are already compressed and optimal.
+
+    Falls back to ``None`` (caller should render the raster rect) when:
+
+    - ``doc.extract_image()`` fails
+    - The image has a soft mask (transparency) requiring compositing
+
+    Returns:
+        ``(image_bytes, extension)`` on success, or ``None``.
+    """
+    img_data = doc.extract_image(raster.xref)
+    if img_data is None:
+        return None
+
+    # Soft mask requires compositing via Pixmap → always PNG.
+    if raster.smask != 0:
+        try:
+            base_pix = pymupdf.Pixmap(doc, raster.xref)
+            mask_pix = pymupdf.Pixmap(doc, raster.smask)
+            combined = pymupdf.Pixmap(base_pix, mask_pix)
+        except Exception:
+            _log.debug("      smask compositing failed for xref %d", raster.xref)
+            return None
+        return _pixmap_to_png(combined), "png"
+
+    # Native extraction — return original bytes and format.
+    # No DPI cap: native bytes are already compressed (JPEG/PNG) and
+    # optimal.  Capping would require re-rendering, losing quality.
+    return img_data["image"], img_data["ext"]
+
+
+def render_image_rects(
+    doc: pymupdf.Document,
+    rects: list[ImageRect],
+    image_mode: ImageMode = ImageMode.AUTO,
+    render_dpi: int | None = None,
+) -> list[RenderedImage]:
+    """Extract or render image regions from a PDF, page by page.
+
+    For each page that has IMAGE blocks:
+
+    1. **Index** embedded rasters via :func:`_index_page_rasters`.
+    2. **Match** rasters to blocks by overlap.
+    3. **Extract or render** based on match count and *image_mode*:
+
+       - ``ImageMode.AUTO``: try native extraction for single-raster
+         matches; fall back to page rendering.
+       - ``ImageMode.SNAP``: always render page regions snapped to
+         PDF raster bounds, never extract native raster bytes.
+       - ``ImageMode.BBOX``: render AI-based bounding box directly,
+         skip raster matching entirely.
+
+    Args:
+        doc: An open pymupdf Document.
+        rects: Parsed bounding boxes from ``IMAGE_RECT`` markers.
+        image_mode: Extraction strategy (default ``AUTO``).
+        render_dpi: Explicit DPI override for page-region renders.
+            When ``None``, uses the module-level ``_RENDER_DPI``.
+
+    Returns:
+        List of :class:`RenderedImage` with image data and filenames.
     """
     if not rects:
         return []
 
-    doc = pymupdf.open(str(pdf_path))
     rendered: list[RenderedImage] = []
 
-    try:
-        # ---------------------------------------------------------------
-        # Pass 1: Collect per-page rasters and block clips.
-        # ---------------------------------------------------------------
-        # page_num -> (rasters, [(rect_index, ImageRect, clip)])
-        page_data: dict[
-            int,
-            tuple[list[pymupdf.Rect], list[tuple[int, ImageRect, pymupdf.Rect]]],
-        ] = {}
+    # Group rects by page number.
+    page_groups: dict[int, list[tuple[int, ImageRect]]] = {}
+    for idx, ir in enumerate(rects):
+        page_groups.setdefault(ir.page_num, []).append((idx, ir))
 
-        for idx, ir in enumerate(rects):
-            page_idx = ir.page_num - 1
-            if page_idx < 0 or page_idx >= len(doc):
-                _log.warning(
-                    "IMAGE_RECT references page %d but PDF has %d pages — skipping",
-                    ir.page_num, len(doc),
-                )
-                continue
+    page_counters: dict[int, int] = {}
 
-            page = doc[page_idx]
+    for page_num in sorted(page_groups):
+        blocks = page_groups[page_num]
+        page_idx = page_num - 1
+        if page_idx < 0 or page_idx >= len(doc):
+            _log.warning(
+                "IMAGE_RECT references page %d but PDF has %d pages — skipping",
+                page_num, len(doc),
+            )
+            continue
 
-            if ir.page_num not in page_data:
-                rasters = _get_significant_rasters(page)
-                page_data[ir.page_num] = (rasters, [])
+        page = doc[page_idx]
+        clips = [_compute_padded_clip(ir, page) for _, ir in blocks]
 
-            clip = _compute_padded_clip(ir, page)
+        # In BBOX mode, skip raster indexing/matching entirely.
+        if image_mode is not ImageMode.BBOX:
+            page_rasters = _index_page_rasters(page)
+            matches = _match_rasters_to_blocks(page_rasters, clips)
+            _log.debug(
+                "    page %d: %d raster(s), %d block(s)",
+                page_num, len(page_rasters), len(blocks),
+            )
+        else:
+            page_rasters = []
+            matches = {i: [] for i in range(len(clips))}
+            _log.debug(
+                "    page %d: %d block(s) [bbox mode]",
+                page_num, len(blocks),
+            )
+
+        for i, (idx, ir) in enumerate(blocks):
+            clip = clips[i]
             if clip.is_empty or clip.is_infinite:
                 _log.warning(
                     "IMAGE_RECT on page %d produced invalid clip rect — skipping",
-                    ir.page_num,
+                    page_num,
                 )
                 continue
 
-            page_data[ir.page_num][1].append((idx, ir, clip))
+            dpi = _compute_render_dpi(render_dpi)
 
-        # ---------------------------------------------------------------
-        # Pass 2: Match rasters to blocks, then render.
-        # ---------------------------------------------------------------
-        page_counters: dict[int, int] = {}
+            # BBOX mode: render raw AI bounding box, skip matching.
+            if image_mode is ImageMode.BBOX:
+                img_bytes, ext = _render_region(page, clip, dpi)
+                _log.debug(
+                    "      bbox → render at %d DPI", dpi,
+                )
 
-        for page_num, (rasters, blocks) in page_data.items():
-            if not blocks:
-                continue
-
-            clips = [clip for _, _, clip in blocks]
-            matches = _match_rasters_to_blocks(rasters, clips)
-
-            _log.debug(
-                "    page %d: %d raster(s), %d block(s)",
-                page_num, len(rasters), len(blocks),
-            )
-
-            for i, (idx, ir, clip) in enumerate(blocks):
-                matched_raster = matches.get(i)
-
-                if matched_raster is not None:
-                    final_clip = matched_raster
+            elif len(matches[i]) == 1:
+                matched = matches[i]
+                if image_mode is ImageMode.AUTO:
+                    # Try native extraction; fall back to rendering
+                    # the raster's placement rect.
+                    result = _extract_native(doc, matched[0])
+                    if result is not None:
+                        img_bytes, ext = result
+                        _log.debug(
+                            "      native extract: xref=%d, format=%s, "
+                            "%dx%d px",
+                            matched[0].xref, ext,
+                            matched[0].width, matched[0].height,
+                        )
+                    else:
+                        snap = matched[0].rect
+                        img_bytes, ext = _render_region(page, snap, dpi)
+                        _log.debug(
+                            "      native fallback → render raster rect "
+                            "at %d DPI",
+                            dpi,
+                        )
                 else:
-                    final_clip = clip
-
-                if final_clip.is_empty or final_clip.is_infinite:
-                    _log.warning(
-                        "IMAGE_RECT on page %d: final rect is invalid — skipping",
-                        page_num,
-                    )
-                    continue
-
-                page = doc[page_num - 1]
-                pix = page.get_pixmap(clip=final_clip, dpi=dpi)
-
-                # CMYK → RGB conversion if needed.
-                if pix.n - pix.alpha > 3:
-                    pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
-
-                img_bytes = pix.tobytes("png")
-
-                img_idx = page_counters.get(page_num, 0)
-                page_counters[page_num] = img_idx + 1
-
-                filename = IMAGE_FILENAME_FORMAT.format(
-                    page=page_num, idx=img_idx + 1,
-                )
-                rendered.append(RenderedImage(
-                    page_num=page_num,
-                    index=img_idx,
-                    image_bytes=img_bytes,
-                    filename=filename,
-                ))
-
-                if matched_raster is not None:
+                    # SNAP mode: always render the raster's placement
+                    # rect (precise bounds from PDF structure).
+                    snap = matched[0].rect
+                    img_bytes, ext = _render_region(page, snap, dpi)
                     _log.debug(
-                        "      %s: raster snap "
-                        "(%.0f,%.0f,%.0f,%.0f) → %d×%d px",
-                        filename,
-                        final_clip.x0, final_clip.y0,
-                        final_clip.x1, final_clip.y1,
-                        pix.width, pix.height,
+                        "      snap raster rect at %d DPI", dpi,
                     )
-                else:
-                    reason = (
-                        "no rasters on page"
-                        if len(rasters) == 0
-                        else "composite figure"
-                        if len(blocks) == 1
-                        else "unmatched"
-                    )
-                    _log.warning(
-                        "      %s: raw bbox — %s → %d×%d px",
-                        filename, reason,
-                        pix.width, pix.height,
-                    )
-    finally:
-        doc.close()
+
+            elif len(matches[i]) > 1:
+                # Composite: union of all matched rasters.
+                matched = matches[i]
+                union = pymupdf.Rect(matched[0].rect)
+                for r in matched[1:]:
+                    union |= r.rect
+                if union.is_empty or union.is_infinite:
+                    union = clip
+                img_bytes, ext = _render_region(page, union, dpi)
+                _log.debug(
+                    "      composite (%d rasters) → render union at %d DPI",
+                    len(matched), dpi,
+                )
+
+            else:
+                # No rasters matched: render Claude's bbox.
+                img_bytes, ext = _render_region(page, clip, dpi)
+                reason = "no rasters on page" if not page_rasters else "unmatched"
+                _log.debug(
+                    "      %s → render bbox at %d DPI", reason, dpi,
+                )
+
+            img_idx = page_counters.get(page_num, 0)
+            page_counters[page_num] = img_idx + 1
+
+            filename = IMAGE_FILENAME_FORMAT.format(
+                page=page_num, idx=img_idx + 1, ext=ext,
+            )
+            rendered.append(RenderedImage(
+                page_num=page_num,
+                index=img_idx,
+                image_bytes=img_bytes,
+                filename=filename,
+            ))
 
     return rendered
 
@@ -623,17 +730,21 @@ def extract_and_inject_images(
     pdf_path: Path,
     markdown: str,
     output_dir: Path,
-    dpi: int = DEFAULT_IMAGE_DPI,
+    image_mode: ImageMode = ImageMode.AUTO,
+    render_dpi: int | None = None,
 ) -> str:
-    """Parse IMAGE_RECT markers, render regions, save files, inject refs.
+    """Parse IMAGE_RECT markers, extract/render images, save, inject refs.
 
-    This is the single entry point called from the pipeline.
+    This is the single entry point called from the pipeline.  Opens the
+    PDF once and passes the document to :func:`render_image_rects` for
+    page-by-page processing.
 
     Args:
         pdf_path: Path to the source PDF.
         markdown: Merged markdown containing ``IMAGE_RECT`` markers.
         output_dir: Directory for saving rendered image files.
-        dpi: Resolution for rendering (default 150).
+        image_mode: Extraction strategy (default ``AUTO``).
+        render_dpi: Explicit DPI override for page-region renders.
 
     Returns:
         Updated markdown with ``![caption](path)`` references injected.
@@ -645,7 +756,14 @@ def extract_and_inject_images(
 
     _log.info("  Found %d IMAGE_RECT marker(s), rendering...", len(rects))
 
-    rendered = render_image_rects(pdf_path, rects, dpi=dpi)
+    doc = pymupdf.open(str(pdf_path))
+    try:
+        rendered = render_image_rects(
+            doc, rects, image_mode=image_mode, render_dpi=render_dpi,
+        )
+    finally:
+        doc.close()
+
     if not rendered:
         _log.warning("  All IMAGE_RECT markers failed to render")
         return markdown

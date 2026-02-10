@@ -248,10 +248,10 @@ the enclosing ``PAGE_BEGIN`` marker.
 # Extracted-image file naming
 # ---------------------------------------------------------------------------
 
-IMAGE_FILENAME_FORMAT = "img_p{page:03d}_{idx:02d}.png"
+IMAGE_FILENAME_FORMAT = "img_p{page:03d}_{idx:02d}.{ext}"
 """Format string for extracted image filenames.
 
->>> IMAGE_FILENAME_FORMAT.format(page=1, idx=1)
+>>> IMAGE_FILENAME_FORMAT.format(page=1, idx=1, ext="png")
 'img_p001_01.png'
 """
 
