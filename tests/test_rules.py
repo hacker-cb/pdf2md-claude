@@ -194,9 +194,9 @@ class TestBuildCustomPrompt:
         prompt = build_custom_system_prompt(parsed)
         assert "**New rule**: Final extra." in prompt
         # Should be at the end (after the last default rule).
-        output_pos = prompt.index("**Output**")
+        images_pos = prompt.index("**Images**")
         extra_pos = prompt.index("**New rule**: Final extra.")
-        assert extra_pos > output_pos
+        assert extra_pos > images_pos
 
     def test_empty_result_matches_default(self) -> None:
         prompt = build_custom_system_prompt(RulesFileResult())

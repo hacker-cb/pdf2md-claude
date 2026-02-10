@@ -293,9 +293,9 @@ class TestSystemPrompt:
     """Tests for the refactored SYSTEM_PROMPT assembly."""
 
     def test_rule_count(self):
-        """SYSTEM_PROMPT should contain exactly 9 numbered rules."""
-        assert len(_RULES) == 9
-        assert len(_DEFAULT_REGISTRY) == 9
+        """SYSTEM_PROMPT should contain exactly 8 numbered rules."""
+        assert len(_RULES) == 8
+        assert len(_DEFAULT_REGISTRY) == 8
 
     def test_registry_derives_rules(self):
         """_RULES should be derived from _DEFAULT_REGISTRY."""
