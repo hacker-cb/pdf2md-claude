@@ -158,17 +158,13 @@ output a blockquote (`> ...`) with a thorough description: all labeled \
 elements, axes, values, arrows, connections, states, transitions, and \
 spatial relationships. Include enough detail that a reader who cannot see \
 the image can fully understand it.
-   - **Flowcharts / state diagrams**: Convert to Mermaid code blocks \
-(```mermaid ... ```) when the structure is clear enough to reproduce. \
-Place inside the description markers; still include a brief blockquote \
-summary below the Mermaid block.
    - **No content extraction from figures**: Content visible inside a figure \
 (e.g., tables in screenshots, text in diagrams, code in panels) must NOT \
 be reproduced as standalone text, tables, or code blocks outside the image \
 block. The figure is already captured by its bounding box and AI \
 description. Only convert content that exists as first-class document \
 content on the page.
-   - Example structure:
+   - Example:
    ```
    {_IB}
    {_IR}
