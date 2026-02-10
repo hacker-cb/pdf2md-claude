@@ -377,7 +377,7 @@ def render_image_rects(
             matches = _match_rasters_to_blocks(rasters, clips)
 
             _log.debug(
-                "  page %d: %d raster(s), %d block(s)",
+                "    page %d: %d raster(s), %d block(s)",
                 page_num, len(rasters), len(blocks),
             )
 
@@ -386,33 +386,8 @@ def render_image_rects(
 
                 if matched_raster is not None:
                     final_clip = matched_raster
-                    _log.debug(
-                        "    %s: raster snap "
-                        "(%.0f,%.0f,%.0f,%.0f)",
-                        IMAGE_FILENAME_FORMAT.format(
-                            page=page_num,
-                            idx=page_counters.get(page_num, 0) + 1,
-                        ),
-                        final_clip.x0, final_clip.y0,
-                        final_clip.x1, final_clip.y1,
-                    )
                 else:
                     final_clip = clip
-                    reason = (
-                        "no rasters on page"
-                        if len(rasters) == 0
-                        else "composite figure"
-                        if len(blocks) == 1
-                        else "unmatched"
-                    )
-                    _log.warning(
-                        "    %s: raw bbox — %s, may include extra content",
-                        IMAGE_FILENAME_FORMAT.format(
-                            page=page_num,
-                            idx=page_counters.get(page_num, 0) + 1,
-                        ),
-                        reason,
-                    )
 
                 if final_clip.is_empty or final_clip.is_infinite:
                     _log.warning(
@@ -443,10 +418,28 @@ def render_image_rects(
                     filename=filename,
                 ))
 
-                _log.debug(
-                    "  Rendered %s (page %d, %.0f×%.0f px)",
-                    filename, page_num, pix.width, pix.height,
-                )
+                if matched_raster is not None:
+                    _log.debug(
+                        "      %s: raster snap "
+                        "(%.0f,%.0f,%.0f,%.0f) → %d×%d px",
+                        filename,
+                        final_clip.x0, final_clip.y0,
+                        final_clip.x1, final_clip.y1,
+                        pix.width, pix.height,
+                    )
+                else:
+                    reason = (
+                        "no rasters on page"
+                        if len(rasters) == 0
+                        else "composite figure"
+                        if len(blocks) == 1
+                        else "unmatched"
+                    )
+                    _log.warning(
+                        "      %s: raw bbox — %s → %d×%d px",
+                        filename, reason,
+                        pix.width, pix.height,
+                    )
     finally:
         doc.close()
 
