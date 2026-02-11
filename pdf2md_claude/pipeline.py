@@ -22,8 +22,10 @@ steps + write from cached chunks without any API calls.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -40,6 +42,56 @@ _log = logging.getLogger("pipeline")
 
 _IMAGE_DIR_SUFFIX = ".images"
 """Suffix appended to the output stem for the extracted-images directory."""
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-level helpers (no API context needed)
+# ---------------------------------------------------------------------------
+
+
+def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path:
+    """Resolve output file path for a given PDF.
+
+    *suffix* is inserted between the stem and ``.md`` extension
+    (e.g. ``"_first10"`` when ``--max-pages`` is used, or ``""``).
+
+    Default: Markdown file is placed next to the source PDF.
+    With *output_dir*: all output goes to the specified directory.
+    """
+    base = output_dir if output_dir else pdf_path.parent
+    return base / f"{pdf_path.stem}{suffix}.md"
+
+
+def needs_conversion(pdf_path: Path, output_dir: Path, force: bool,
+                     suffix: str = "",
+                     model_id: str | None = None) -> bool:
+    """Check if a PDF needs to be converted.
+
+    Args:
+        pdf_path: Source PDF file.
+        output_dir: Directory where the output Markdown would be written.
+        force: If True, always reconvert.
+        suffix: Output filename suffix (e.g., ``"_first5"`` for ``--max-pages 5``).
+        model_id: If provided, also check the cached manifest for model
+            staleness.  When the output file exists but was produced by a
+            different model, return ``True`` (needs reconversion).
+    """
+    output_md = output_dir / f"{pdf_path.stem}{suffix}.md"
+    if force or not output_md.exists():
+        return True
+    # Output exists -- check manifest for model staleness.
+    if model_id is not None:
+        manifest_path = (
+            output_dir / f"{pdf_path.stem}{suffix}.chunks" / "manifest.json"
+        )
+        if manifest_path.exists():
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if data.get("model_id") != model_id:
+                    return True
+            except (json.JSONDecodeError, KeyError):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +273,8 @@ class PipelineResult:
     validation: ValidationResult
     cached_chunks: int
     fresh_chunks: int
+    step_timings: dict[str, float] = field(default_factory=dict)
+    """Per-step execution time in seconds (step name -> elapsed)."""
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +351,7 @@ class ConversionPipeline:
 
         # 4–6. Merge, run steps, write.
         parts = [cr.markdown for cr in result.chunks]
-        ctx = self._process(parts, pdf_path, output_file)
+        ctx, step_timings = self._process(parts, pdf_path, output_file)
 
         return PipelineResult(
             stats=result.stats,
@@ -305,6 +359,7 @@ class ConversionPipeline:
             validation=ctx.validation,
             cached_chunks=result.cached_chunks,
             fresh_chunks=result.fresh_chunks,
+            step_timings=step_timings,
         )
 
     def remerge(
@@ -352,7 +407,7 @@ class ConversionPipeline:
         parts = [work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
 
         # 3–5. Merge, run steps, write.
-        ctx = self._process(parts, pdf_path, output_file)
+        ctx, step_timings = self._process(parts, pdf_path, output_file)
 
         # Load stats from cache if available (for display purposes).
         stats = work_dir.load_stats()
@@ -372,6 +427,7 @@ class ConversionPipeline:
             validation=ctx.validation,
             cached_chunks=num_chunks,
             fresh_chunks=0,
+            step_timings=step_timings,
         )
 
     # -- internal methods --------------------------------------------------
@@ -388,11 +444,21 @@ class ConversionPipeline:
             return merge_chunks(parts)
         return parts[0] if parts else ""
 
-    def _run_steps(self, ctx: ProcessingContext) -> None:
-        """Execute all processing steps in order."""
+    def _run_steps(self, ctx: ProcessingContext) -> dict[str, float]:
+        """Execute all processing steps in order.
+
+        Returns:
+            Dict mapping step name to elapsed time in seconds.
+        """
+        timings: dict[str, float] = {}
         for step in self._steps:
             _log.info("  Step: %s...", step.name)
+            t0 = time.monotonic()
             step.run(ctx)
+            elapsed = time.monotonic() - t0
+            timings[step.name] = elapsed
+            _log.debug("  Step: %s done (%.2fs)", step.name, elapsed)
+        return timings
 
     def _write(self, ctx: ProcessingContext) -> None:
         """Write the final markdown to disk."""
@@ -408,7 +474,7 @@ class ConversionPipeline:
         parts: list[str],
         pdf_path: Path | None,
         output_file: Path,
-    ) -> ProcessingContext:
+    ) -> tuple[ProcessingContext, dict[str, float]]:
         """Merge chunks, run all steps, and write the output file.
 
         Shared logic between :meth:`convert` and :meth:`remerge`.
@@ -419,7 +485,7 @@ class ConversionPipeline:
             output_file: Target path for the output Markdown file.
 
         Returns:
-            The :class:`ProcessingContext` after all steps have run.
+            Tuple of (context after all steps, per-step timings dict).
         """
         markdown = self._merge(parts)
         ctx = ProcessingContext(
@@ -427,6 +493,6 @@ class ConversionPipeline:
             pdf_path=pdf_path,
             output_file=output_file,
         )
-        self._run_steps(ctx)
+        step_timings = self._run_steps(ctx)
         self._write(ctx)
-        return ctx
+        return ctx, step_timings

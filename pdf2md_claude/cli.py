@@ -17,13 +17,14 @@ import sys
 import time
 from pathlib import Path
 
+import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
 from pdf2md_claude.client import create_client
-from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter, needs_conversion
+from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter
 from pdf2md_claude.images import ImageMode
-from pdf2md_claude.models import MODELS, DocumentUsageStats, format_summary
+from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
 from pdf2md_claude.pipeline import (
     ConversionPipeline,
     ExtractImagesStep,
@@ -31,6 +32,8 @@ from pdf2md_claude.pipeline import (
     ProcessingStep,
     StripAIDescriptionsStep,
     ValidateStep,
+    needs_conversion,
+    resolve_output,
 )
 from pdf2md_claude.prompt import SYSTEM_PROMPT
 from pdf2md_claude.rules import (
@@ -83,24 +86,6 @@ def setup_colorized_logging():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("anthropic").setLevel(logging.WARNING)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path:
-    """Resolve output file path for a given PDF.
-
-    *suffix* is inserted between the stem and ``.md`` extension
-    (e.g. ``"_first10"`` when ``--max-pages`` is used, or ``""``).
-
-    Default: Markdown file is placed next to the source PDF.
-    With --output-dir: all output goes to the specified directory.
-    """
-    base = output_dir if output_dir else pdf_path.parent
-    return base / f"{pdf_path.stem}{suffix}.md"
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +300,8 @@ def _process_pdf(
     pdf_path: Path,
     args: argparse.Namespace,
     *,
-    model: object,
-    client: object,
+    model: ModelConfig,
+    client: anthropic.Anthropic | None,
     pipeline: ConversionPipeline,
     output_dir: Path | None,
     pages_per_chunk: int,
@@ -332,7 +317,8 @@ def _process_pdf(
     if args.remerge:
         result = pipeline.remerge(output_file, pdf_path=pdf_path)
     else:
-        assert client is not None
+        if client is None:
+            raise RuntimeError("API client required for conversion (not remerge)")
         system_prompt = _resolve_rules(pdf_path, args.rules, rules_cache)
 
         converter = PdfConverter(
@@ -351,7 +337,7 @@ def _process_pdf(
 
 
 def _log_summary(
-    model: object,
+    model: ModelConfig,
     all_stats: list[DocumentUsageStats],
     total_elapsed: float,
     success: int,
@@ -413,13 +399,11 @@ def main() -> int:
         parser.print_help()
         return 0
 
-    # Argument validation.
+    # Argument validation (before logging is configured, use parser.error).
     if args.rules and args.remerge:
-        _log.error("--rules and --remerge cannot be used together")
-        return 1
+        parser.error("--rules and --remerge cannot be used together")
     if args.rules and not args.rules.is_file():
-        _log.error("Rules file not found: %s", args.rules)
-        return 1
+        parser.error(f"Rules file not found: {args.rules}")
 
     # Setup logging
     setup_colorized_logging()

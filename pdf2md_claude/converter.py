@@ -7,7 +7,6 @@ high-fidelity conversion of dense technical documents.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import re
 import time
@@ -201,43 +200,6 @@ def plan_chunks(
         idx += 1
 
     return chunks
-
-
-# ---------------------------------------------------------------------------
-# Conversion helpers (pure, no API context needed)
-# ---------------------------------------------------------------------------
-
-
-def needs_conversion(pdf_path: Path, output_dir: Path, force: bool,
-                     suffix: str = "",
-                     model_id: str | None = None) -> bool:
-    """Check if a PDF needs to be converted.
-
-    Args:
-        pdf_path: Source PDF file.
-        output_dir: Directory where the output Markdown would be written.
-        force: If True, always reconvert.
-        suffix: Output filename suffix (e.g., ``"_first5"`` for ``--max-pages 5``).
-        model_id: If provided, also check the cached manifest for model
-            staleness.  When the output file exists but was produced by a
-            different model, return ``True`` (needs reconversion).
-    """
-    output_md = output_dir / f"{pdf_path.stem}{suffix}.md"
-    if force or not output_md.exists():
-        return True
-    # Output exists -- check manifest for model staleness.
-    if model_id is not None:
-        manifest_path = (
-            output_dir / f"{pdf_path.stem}{suffix}.chunks" / "manifest.json"
-        )
-        if manifest_path.exists():
-            try:
-                data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if data.get("model_id") != model_id:
-                    return True
-            except (json.JSONDecodeError, KeyError):
-                return True
-    return False
 
 
 _CACHE_CONTROL = {"type": "ephemeral", "ttl": "1h"}

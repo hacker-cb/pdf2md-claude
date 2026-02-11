@@ -248,7 +248,7 @@ class TestProcess:
         step = RecordingStep(label="transform", suffix="\n## Added by step")
         pipeline = ConversionPipeline(steps=[step])
 
-        ctx = pipeline._process(
+        ctx, step_timings = pipeline._process(
             parts=["# Title\n\nSome content"],
             pdf_path=None,
             output_file=output_file,
@@ -260,6 +260,8 @@ class TestProcess:
         assert "## Added by step" in content
         assert step.calls == ["transform"]
         assert ctx.markdown == content
+        assert "transform" in step_timings
+        assert step_timings["transform"] >= 0
 
 
 # ---------------------------------------------------------------------------
