@@ -13,6 +13,7 @@ from pdf2md_claude.pipeline import (
     MergeContinuedTablesStep,
     ProcessingContext,
     ProcessingStep,
+    StripAIDescriptionsStep,
     ValidateStep,
 )
 from pdf2md_claude.validator import ValidationResult
@@ -259,3 +260,92 @@ class TestProcess:
         assert "## Added by step" in content
         assert step.calls == ["transform"]
         assert ctx.markdown == content
+
+
+# ---------------------------------------------------------------------------
+# StripAIDescriptionsStep tests
+# ---------------------------------------------------------------------------
+
+
+class TestStripAIDescriptionsStep:
+    """Tests for StripAIDescriptionsStep."""
+
+    def test_is_processing_step(self):
+        assert isinstance(StripAIDescriptionsStep(), ProcessingStep)
+
+    def test_step_name(self):
+        assert StripAIDescriptionsStep().name == "strip AI descriptions"
+
+    def test_strips_single_description_block(self):
+        md = (
+            "Real content before.\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_BEGIN -->\n"
+            "> AI description of a diagram.\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_END -->\n"
+            "Real content after."
+        )
+        ctx = _make_ctx(md)
+        StripAIDescriptionsStep().run(ctx)
+        assert "AI description" not in ctx.markdown
+        assert "Real content before." in ctx.markdown
+        assert "Real content after." in ctx.markdown
+
+    def test_strips_multiple_description_blocks(self):
+        md = (
+            "Intro.\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_BEGIN -->\n"
+            "> First AI description.\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_END -->\n"
+            "Middle.\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_BEGIN -->\n"
+            "> Second AI description.\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_END -->\n"
+            "End."
+        )
+        ctx = _make_ctx(md)
+        StripAIDescriptionsStep().run(ctx)
+        assert "First AI description" not in ctx.markdown
+        assert "Second AI description" not in ctx.markdown
+        assert "Intro." in ctx.markdown
+        assert "Middle." in ctx.markdown
+        assert "End." in ctx.markdown
+
+    def test_collapses_orphaned_blank_lines(self):
+        md = (
+            "Before.\n\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_BEGIN -->\n"
+            "> Description.\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_END -->\n\n"
+            "After."
+        )
+        ctx = _make_ctx(md)
+        StripAIDescriptionsStep().run(ctx)
+        # Should not have more than one blank line between Before/After.
+        assert "\n\n\n" not in ctx.markdown
+        assert "Before." in ctx.markdown
+        assert "After." in ctx.markdown
+
+    def test_no_op_without_descriptions(self):
+        md = "# Title\n\nPlain content with no AI descriptions."
+        ctx = _make_ctx(md)
+        StripAIDescriptionsStep().run(ctx)
+        assert ctx.markdown == md
+
+    def test_preserves_image_block_structure(self):
+        """IMAGE_BEGIN/END markers and image refs are preserved."""
+        md = (
+            "<!-- IMAGE_BEGIN -->\n"
+            "<!-- IMAGE_RECT 0.1,0.2,0.9,0.8 -->\n"
+            "![Figure 1](images/img_p001_01.png)\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_BEGIN -->\n"
+            "> AI description of figure 1.\n"
+            "<!-- IMAGE_AI_GENERATED_DESCRIPTION_END -->\n"
+            "<!-- IMAGE_END -->"
+        )
+        ctx = _make_ctx(md)
+        StripAIDescriptionsStep().run(ctx)
+        assert "IMAGE_BEGIN" in ctx.markdown
+        assert "IMAGE_END" in ctx.markdown
+        assert "IMAGE_RECT" in ctx.markdown
+        assert "img_p001_01.png" in ctx.markdown
+        assert "AI description" not in ctx.markdown

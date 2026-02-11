@@ -13,6 +13,7 @@ Built-in steps:
 
 - :class:`MergeContinuedTablesStep` — merges split tables.
 - :class:`ExtractImagesStep` — renders and injects images.
+- :class:`StripAIDescriptionsStep` — removes AI-generated image descriptions.
 - :class:`ValidateStep` — runs quality checks.
 
 Also provides :meth:`ConversionPipeline.remerge` for re-running merge +
@@ -22,12 +23,14 @@ steps + write from cached chunks without any API calls.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from pdf2md_claude.converter import ConversionResult, PdfConverter
 from pdf2md_claude.images import ImageExtractor, ImageMode
+from pdf2md_claude.markers import IMAGE_AI_DESCRIPTION_BLOCK_RE
 from pdf2md_claude.merger import merge_chunks, merge_continued_tables
 from pdf2md_claude.models import DocumentUsageStats
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
@@ -146,6 +149,28 @@ class ExtractImagesStep:
             render_dpi=self.render_dpi,
         )
         ctx.markdown = extractor.extract_and_inject(ctx.markdown)
+
+
+_CONSECUTIVE_BLANK_LINES_RE = re.compile(r"\n{3,}")
+"""Regex matching 3+ consecutive newlines (used to collapse blanks after stripping)."""
+
+
+@dataclass
+class StripAIDescriptionsStep:
+    """Strip AI-generated image description blocks from the markdown.
+
+    Removes content between ``IMAGE_AI_GENERATED_DESCRIPTION_BEGIN``
+    and ``IMAGE_AI_GENERATED_DESCRIPTION_END`` markers (inclusive).
+    Collapses any orphaned blank lines left by the removal.
+    """
+
+    @property
+    def name(self) -> str:
+        return "strip AI descriptions"
+
+    def run(self, ctx: ProcessingContext) -> None:
+        ctx.markdown = IMAGE_AI_DESCRIPTION_BLOCK_RE.sub("", ctx.markdown)
+        ctx.markdown = _CONSECUTIVE_BLANK_LINES_RE.sub("\n\n", ctx.markdown)
 
 
 @dataclass

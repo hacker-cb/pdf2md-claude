@@ -29,6 +29,7 @@ from pdf2md_claude.pipeline import (
     ExtractImagesStep,
     MergeContinuedTablesStep,
     ProcessingStep,
+    StripAIDescriptionsStep,
     ValidateStep,
 )
 from pdf2md_claude.prompt import SYSTEM_PROMPT
@@ -208,6 +209,13 @@ Examples:
         metavar="DPI",
         help="DPI for page-region rendering — vector diagrams, composites, "
              f"and snap/bbox modes (default: {DEFAULT_IMAGE_DPI}).",
+    )
+    parser.add_argument(
+        "--strip-ai-descriptions",
+        action="store_true",
+        help="Remove AI-generated image description blocks from the output. "
+             "These are textual descriptions Claude generates for images, "
+             "wrapped in IMAGE_AI_GENERATED_DESCRIPTION markers.",
     )
     parser.add_argument(
         "--model",
@@ -464,6 +472,8 @@ def main() -> int:
                 image_mode=ImageMode(args.image_mode),
                 render_dpi=args.image_dpi,
             ))
+        if args.strip_ai_descriptions:
+            steps.append(StripAIDescriptionsStep())
         steps.append(ValidateStep())
 
         pipeline = ConversionPipeline(steps)
