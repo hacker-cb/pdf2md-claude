@@ -172,12 +172,12 @@ class TestCheckPageMarkers:
 class TestCheckPageEndMarkers:
     """Tests for _check_page_end_markers() in validator.py."""
 
-    def test_no_end_markers_warns(self):
-        """Missing end markers when begin markers exist should warn."""
+    def test_no_end_markers_is_error(self):
+        """Missing end markers when begin markers exist should error."""
         r = ValidationResult()
         md = "<!-- PDF_PAGE_BEGIN 1 -->\nContent"
         _check_page_end_markers(md, r)
-        assert any("No PDF_PAGE_END" in w for w in r.warnings)
+        assert any("No PDF_PAGE_END" in e for e in r.errors)
 
     def test_matching_pairs_no_errors(self):
         """Matched begin/end pairs should produce no errors."""
@@ -199,15 +199,15 @@ class TestCheckPageEndMarkers:
         _check_page_end_markers(md, r)
         assert any("PDF_PAGE_END 99 has no matching" in e for e in r.errors)
 
-    def test_missing_end_warns(self):
-        """Begin marker without matching end should warn."""
+    def test_missing_end_is_error(self):
+        """Begin marker without matching end should error."""
         r = ValidationResult()
         md = (
             "<!-- PDF_PAGE_BEGIN 1 -->\nContent\n<!-- PDF_PAGE_END 1 -->\n"
             "<!-- PDF_PAGE_BEGIN 2 -->\nMore"
         )
         _check_page_end_markers(md, r)
-        assert any("PDF_PAGE_BEGIN 2 has no matching" in w for w in r.warnings)
+        assert any("PDF_PAGE_BEGIN 2 has no matching" in e for e in r.errors)
 
     def test_no_markers_at_all_no_warn(self):
         """No markers at all should produce no warnings."""

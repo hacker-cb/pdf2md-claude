@@ -93,7 +93,7 @@ class TestImageRectFormat:
         result = IMAGE_RECT.format(
             x0=0.02, y0=0.15, x1=0.98, y1=0.65,
         )
-        assert "IMAGE_RECT" in result
+        assert IMAGE_RECT.tag in result
         assert "0.02" in result
 
     def test_format_roundtrips_through_regex(self):

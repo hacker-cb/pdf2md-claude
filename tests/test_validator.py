@@ -2,6 +2,7 @@
 
 import pytest
 
+from pdf2md_claude.markers import PAGE_SKIP
 from pdf2md_claude.validator import (
     ValidationResult,
     check_page_fidelity,
@@ -312,7 +313,7 @@ class TestExtractPageContents:
         )
         result = _extract_page_contents(md)
         assert 2 in result
-        assert "PDF_PAGE_SKIP" in result[2]
+        assert PAGE_SKIP.tag in result[2]
 
     def test_empty_markdown(self):
         assert _extract_page_contents("") == {}

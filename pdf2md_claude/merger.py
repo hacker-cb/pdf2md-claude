@@ -39,10 +39,6 @@ _TBODY_ROWS_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _TR_RE = re.compile(r"<tr\b[^>]*>.*?</tr>", re.DOTALL | re.IGNORECASE)
-# "(continued)" title line that precedes a continuation table.
-_CONTINUED_TITLE_RE = re.compile(
-    r"\*\*Table\s+(?:\d+|[A-Z]\.\d+)\s*[–—-][^*]*\*\*\s*\*\(continued\)\*",
-)
 
 
 def _extract_pages(markdown: str) -> dict[int, str]:

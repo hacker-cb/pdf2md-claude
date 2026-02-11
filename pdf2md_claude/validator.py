@@ -189,6 +189,10 @@ def _check_fabrication(markdown: str, result: ValidationResult) -> None:
 # Pages with fewer words (e.g., image-only, formula-only) are skipped.
 _FIDELITY_MIN_WORDS = 20
 
+# Minimum significant words in the PDF raw text for a page to be checked.
+# Pages with fewer words (scanned image, blank page) are skipped.
+_FIDELITY_MIN_PDF_WORDS = 5
+
 # Overlap threshold: fraction of markdown's significant words that must
 # appear in the PDF page's raw text.  Below this → suspect fabrication.
 _FIDELITY_OVERLAP_THRESHOLD = 0.50
@@ -280,6 +284,11 @@ def check_page_fidelity(
 
         page_contents = _extract_page_contents(markdown)
         if not page_contents:
+            if PAGE_BEGIN.re.search(markdown):
+                result.errors.append(
+                    "Fidelity check skipped: PAGE_BEGIN markers present "
+                    "but no PAGE_END markers (needed for content extraction)"
+                )
             return
 
         suspect: list[tuple[int, float]] = []
@@ -307,7 +316,7 @@ def check_page_fidelity(
 
             # Skip if PDF text extraction yielded very few words
             # (scanned image page, blank page, etc.).
-            if len(pdf_words) < 5:
+            if len(pdf_words) < _FIDELITY_MIN_PDF_WORDS:
                 continue
 
             # Overlap: fraction of markdown words found in PDF text.
@@ -384,10 +393,8 @@ def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
     end_pages = [int(m) for m in _PAGE_END_MARKER_RE.findall(markdown)]
 
     if not end_pages:
-        # End markers are optional for now (backward compatibility).
-        # Only warn if begin markers exist but no end markers.
         if begin_pages:
-            result.warnings.append(
+            result.errors.append(
                 "No PDF_PAGE_END markers found (PDF_PAGE_BEGIN markers present)"
             )
         return
@@ -411,7 +418,7 @@ def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
     missing_ends = begin_set - end_set
     if missing_ends:
         for p in sorted(missing_ends):
-            result.warnings.append(
+            result.errors.append(
                 f"PDF_PAGE_BEGIN {p} has no matching PDF_PAGE_END"
             )
 

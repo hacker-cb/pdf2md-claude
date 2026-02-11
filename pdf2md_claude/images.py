@@ -335,13 +335,17 @@ def _compute_render_dpi(override: int | None = None) -> int:
     return override if override is not None else _RENDER_DPI
 
 
+_RGB_CHANNELS = 3
+"""Number of colour channels in an sRGB pixmap (excluding alpha)."""
+
+
 def _pixmap_to_png(pix: pymupdf.Pixmap) -> bytes:
     """Convert a pymupdf Pixmap to PNG bytes, handling CMYK→RGB.
 
     If the pixmap has more than 3 color channels (excluding alpha),
     it is converted to sRGB before encoding.
     """
-    if pix.n - pix.alpha > 3:
+    if pix.n - pix.alpha > _RGB_CHANNELS:
         pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
     return pix.tobytes("png")
 
@@ -574,8 +578,8 @@ def render_image_rects(
             dpi = _compute_render_dpi(render_dpi)
             matched_list = matches[i]
             img_idx = page_counters.get(page_num, 0)
-            page_counters[page_num] = img_idx + 1
-            base_idx = img_idx + 1
+            base_idx = img_idx + 1          # 1-based index for filenames
+            page_counters[page_num] = base_idx
 
             # --- DEBUG mode: produce all 3 variants per block --------
             if image_mode is ImageMode.DEBUG:

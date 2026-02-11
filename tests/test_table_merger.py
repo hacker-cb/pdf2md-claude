@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from pdf2md_claude.markers import TABLE_CONTINUE
+from pdf2md_claude.markers import PAGE_BEGIN, PAGE_END, TABLE_CONTINUE
 from pdf2md_claude.merger import merge_continued_tables
 
 
@@ -119,10 +119,10 @@ class TestSingleContinuation:
         )
         assert table_match is not None
         table_html = table_match.group(0)
-        assert "<!-- PDF_PAGE_END 1 -->" in table_html or \
-               "PDF_PAGE_END 1" in merged
-        assert "<!-- PDF_PAGE_BEGIN 2 -->" in table_html or \
-               "PDF_PAGE_BEGIN 2" in merged
+        assert PAGE_END.format(1) in table_html or \
+               PAGE_END.format(1) in merged
+        assert PAGE_BEGIN.format(2) in table_html or \
+               PAGE_BEGIN.format(2) in merged
 
     def test_no_table_continue_markers(self, merged: str):
         assert TABLE_CONTINUE.re.search(merged) is None
@@ -174,8 +174,8 @@ class TestMultipleContinuations:
     def test_page_markers_preserved(self, merged: str):
         """All page boundary markers should be present in the output."""
         for n in (1, 2, 3):
-            assert f"PDF_PAGE_BEGIN {n}" in merged
-            assert f"PDF_PAGE_END {n}" in merged
+            assert PAGE_BEGIN.format(n) in merged
+            assert PAGE_END.format(n) in merged
 
 
 # ---------------------------------------------------------------------------
