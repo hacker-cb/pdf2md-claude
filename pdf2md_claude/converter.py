@@ -561,6 +561,29 @@ class PdfConverter:
         )
         work_dir.save_stats(stats)
 
+        # Log document-level totals.
+        has_cache = stats.cache_creation_tokens > 0 or stats.cache_read_tokens > 0
+        if has_cache:
+            _log.info(
+                "  Conversion done: %s input (%s cache-write, %s cache-read) "
+                "+ %s output tokens, cost $%.2f, time %s",
+                f"{stats.total_input_tokens:,}",
+                f"{stats.cache_creation_tokens:,}",
+                f"{stats.cache_read_tokens:,}",
+                f"{stats.output_tokens:,}",
+                stats.cost,
+                fmt_duration(stats.elapsed_seconds),
+            )
+        else:
+            _log.info(
+                "  Conversion done: %s input + %s output tokens, "
+                "cost $%.2f, time %s",
+                f"{stats.total_input_tokens:,}",
+                f"{stats.output_tokens:,}",
+                stats.cost,
+                fmt_duration(stats.elapsed_seconds),
+            )
+
         fresh_count = num_chunks - cached_count
         if cached_count > 0:
             _log.info(
