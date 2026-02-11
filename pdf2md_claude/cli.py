@@ -187,6 +187,15 @@ Examples:
              "(no API calls, no ANTHROPIC_API_KEY needed). "
              "Useful for debugging merge/post-processing logic.",
     )
+    conv_group.add_argument(
+        "--retries",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Max attempts per chunk on transient API/network errors "
+             "(default: %(default)s). Uses exponential backoff 1-30s. "
+             "Set to 1 to disable retry.",
+    )
 
     # -- Image extraction group ------------------------------------------------
     img_group = parser.add_argument_group(
@@ -320,6 +329,7 @@ def _process_pdf(
             client, model,
             use_cache=args.cache,
             system_prompt=system_prompt,
+            max_retries=args.retries,
         )
         result = pipeline.convert(
             converter,

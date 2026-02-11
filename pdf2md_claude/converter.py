@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -39,6 +40,35 @@ DEFAULT_PAGES_PER_CHUNK = 10
 # complete pages are included until the threshold is met.
 _CONTEXT_MIN_PAGES = 3
 _CONTEXT_MIN_LINES = 200
+
+# Retry configuration for transient API/network errors.
+_DEFAULT_MAX_RETRIES = 10
+"""Default maximum total attempts per chunk (1 = no retry)."""
+
+_RETRY_MIN_DELAY_S = 1
+"""Initial retry delay in seconds."""
+
+_RETRY_MAX_DELAY_S = 30
+"""Maximum retry delay in seconds (cap for exponential backoff)."""
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Classify whether an exception is transient and worth retrying.
+
+    Returns ``True`` for network/transport errors and server-side failures
+    that are likely to succeed on a subsequent attempt.  Returns ``False``
+    for permanent client errors (bad request, auth, content filtering).
+
+    Uses string-based type checking for ``httpcore``/``httpx`` transport
+    errors to avoid adding a hard import dependency on ``httpcore``.
+    """
+    if isinstance(exc, (anthropic.APIConnectionError, anthropic.APITimeoutError)):
+        return True
+    if isinstance(exc, anthropic.APIStatusError):
+        return exc.status_code in (429, 500, 502, 503, 529)
+    # httpcore.RemoteProtocolError during streaming — not wrapped by SDK.
+    type_name = type(exc).__name__
+    return type_name in ("RemoteProtocolError", "ReadError", "ProtocolError")
 
 
 # ---------------------------------------------------------------------------
@@ -331,11 +361,13 @@ class PdfConverter:
         model: ModelConfig,
         use_cache: bool = False,
         system_prompt: str | None = None,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
     ) -> None:
         self._client = client
         self._model = model
         self._use_cache = use_cache
         self._system_prompt = system_prompt
+        self._max_retries = max_retries
 
     # -- public API --------------------------------------------------------
 
@@ -606,6 +638,10 @@ class PdfConverter:
     ) -> ApiResponse:
         """Convert a single chunk of PDF pages to Markdown.
 
+        Retries transient API/network errors up to ``self._max_retries``
+        total attempts with exponential backoff (1-30 s).  Non-retryable
+        errors (auth, content filtering, max_tokens) are raised immediately.
+
         Returns:
             :class:`ApiResponse` with markdown text and token usage.
 
@@ -615,7 +651,28 @@ class PdfConverter:
         pdf_b64 = extract_pdf_pages(pdf_path, chunk.page_start, chunk.page_end)
 
         start = time.time()
-        resp = self._send_to_claude(pdf_b64, prompt)
+        resp: ApiResponse | None = None
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                resp = self._send_to_claude(pdf_b64, prompt)
+                break
+            except Exception as e:
+                if not _is_retryable(e) or attempt == self._max_retries:
+                    raise
+                # Exponential backoff: 1, 2, 4, 8, 16, 30, 30, ... capped.
+                base = min(
+                    _RETRY_MIN_DELAY_S * (2 ** (attempt - 1)),
+                    _RETRY_MAX_DELAY_S,
+                )
+                delay = base + random.uniform(0, base * 0.25)
+                _log.warning(
+                    "    Chunk pages %d-%d: %s (attempt %d/%d, retrying in %.0fs)",
+                    chunk.page_start, chunk.page_end,
+                    f"{type(e).__name__}: {e}",
+                    attempt, self._max_retries, delay,
+                )
+                time.sleep(delay)
+        assert resp is not None  # unreachable: loop always breaks or raises
         elapsed = time.time() - start
 
         _log.debug(
