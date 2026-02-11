@@ -32,7 +32,6 @@ from pdf2md_claude.pipeline import (
     ProcessingStep,
     StripAIDescriptionsStep,
     ValidateStep,
-    needs_conversion,
     resolve_output,
 )
 from pdf2md_claude.prompt import SYSTEM_PROMPT
@@ -303,7 +302,6 @@ def _process_pdf(
     model: ModelConfig,
     client: anthropic.Anthropic | None,
     pipeline: ConversionPipeline,
-    output_dir: Path | None,
     pages_per_chunk: int,
     rules_cache: dict[Path, str],
 ) -> DocumentUsageStats:
@@ -311,11 +309,8 @@ def _process_pdf(
 
     Raises on failure so the caller can count success/failure.
     """
-    suffix = f"_first{args.max_pages}" if args.max_pages else ""
-    output_file = resolve_output(pdf_path, suffix, output_dir)
-
     if args.remerge:
-        result = pipeline.remerge(output_file, pdf_path=pdf_path)
+        result = pipeline.remerge()
     else:
         if client is None:
             raise RuntimeError("API client required for conversion (not remerge)")
@@ -327,7 +322,7 @@ def _process_pdf(
             system_prompt=system_prompt,
         )
         result = pipeline.convert(
-            converter, pdf_path, output_file,
+            converter,
             pages_per_chunk=pages_per_chunk,
             max_pages=args.max_pages,
             force=args.force,
@@ -480,23 +475,21 @@ def main() -> int:
             steps.append(StripAIDescriptionsStep())
         steps.append(ValidateStep())
 
-        pipeline = ConversionPipeline(steps)
-
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []
         success = 0
         failure = 0
         cached = 0
         rules_cache: dict[Path, str] = {}
+        suffix = f"_first{args.max_pages}" if args.max_pages else ""
 
         for pdf_path in pdf_paths:
             doc_name = pdf_path.stem
-            suffix = f"_first{args.max_pages}" if args.max_pages else ""
-            per_pdf_output_dir = output_dir if output_dir else pdf_path.parent
+            output_file = resolve_output(pdf_path, suffix, output_dir)
+            pipeline = ConversionPipeline(steps, pdf_path, output_file)
 
-            if not remerge and not needs_conversion(
-                pdf_path, per_pdf_output_dir, args.force,
-                suffix=suffix, model_id=model.model_id,
+            if not remerge and not pipeline.needs_conversion(
+                force=args.force, model_id=model.model_id,
             ):
                 _log.info("⊙ %s (cached)", doc_name)
                 cached += 1
@@ -510,7 +503,6 @@ def main() -> int:
                     model=model,
                     client=client,
                     pipeline=pipeline,
-                    output_dir=output_dir,
                     pages_per_chunk=pages_per_chunk,
                     rules_cache=rules_cache,
                 )

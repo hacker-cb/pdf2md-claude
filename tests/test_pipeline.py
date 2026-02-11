@@ -56,12 +56,29 @@ class FailingStep:
         raise RuntimeError("step failed")
 
 
+_DUMMY_PDF = Path("/tmp/dummy.pdf")
+_DUMMY_OUTPUT = Path("/tmp/test_output.md")
+
+
 def _make_ctx(markdown: str = "", pdf_path: Path | None = None) -> ProcessingContext:
     """Create a minimal ProcessingContext for testing."""
     return ProcessingContext(
         markdown=markdown,
         pdf_path=pdf_path,
-        output_file=Path("/tmp/test_output.md"),
+        output_file=_DUMMY_OUTPUT,
+    )
+
+
+def _make_pipeline(
+    steps: list | None = None,
+    pdf_path: Path = _DUMMY_PDF,
+    output_file: Path = _DUMMY_OUTPUT,
+) -> ConversionPipeline:
+    """Create a ConversionPipeline with dummy paths for testing."""
+    return ConversionPipeline(
+        steps=steps or [],
+        pdf_path=pdf_path,
+        output_file=output_file,
     )
 
 
@@ -126,20 +143,20 @@ class TestPipelineMerge:
     """Tests for ConversionPipeline._merge()."""
 
     def test_empty_list(self):
-        pipeline = ConversionPipeline(steps=[])
+        pipeline = _make_pipeline()
         assert pipeline._merge([]) == ""
 
     def test_single_chunk(self):
-        pipeline = ConversionPipeline(steps=[])
+        pipeline = _make_pipeline()
         assert pipeline._merge(["hello world"]) == "hello world"
 
     def test_single_empty_chunk(self):
-        pipeline = ConversionPipeline(steps=[])
+        pipeline = _make_pipeline()
         assert pipeline._merge([""]) == ""
 
     def test_multiple_chunks_with_page_markers(self):
         """Multiple chunks with page markers are merged by page number."""
-        pipeline = ConversionPipeline(steps=[])
+        pipeline = _make_pipeline()
         chunk1 = "<!-- PDF_PAGE_BEGIN 1 -->\nPage 1 content\n<!-- PDF_PAGE_END 1 -->"
         chunk2 = "<!-- PDF_PAGE_BEGIN 2 -->\nPage 2 content\n<!-- PDF_PAGE_END 2 -->"
         result = pipeline._merge([chunk1, chunk2])
@@ -150,7 +167,7 @@ class TestPipelineMerge:
 
     def test_multiple_chunks_without_markers_fallback(self):
         """Multiple chunks without page markers fall back to simple join."""
-        pipeline = ConversionPipeline(steps=[])
+        pipeline = _make_pipeline()
         result = pipeline._merge(["chunk A", "chunk B"])
         assert "chunk A" in result
         assert "chunk B" in result
@@ -165,7 +182,7 @@ class TestRunSteps:
     """Tests for ConversionPipeline._run_steps()."""
 
     def test_empty_steps(self):
-        pipeline = ConversionPipeline(steps=[])
+        pipeline = _make_pipeline()
         ctx = _make_ctx("content")
         pipeline._run_steps(ctx)
         assert ctx.markdown == "content"
@@ -173,7 +190,7 @@ class TestRunSteps:
     def test_steps_execute_in_order(self):
         step_a = RecordingStep(label="A", suffix="_A")
         step_b = RecordingStep(label="B", suffix="_B")
-        pipeline = ConversionPipeline(steps=[step_a, step_b])
+        pipeline = _make_pipeline(steps=[step_a, step_b])
         ctx = _make_ctx("start")
         pipeline._run_steps(ctx)
         assert ctx.markdown == "start_A_B"
@@ -190,13 +207,13 @@ class TestRunSteps:
             def run(self, ctx: ProcessingContext) -> None:
                 ctx.validation.warnings.append("test warning")
 
-        pipeline = ConversionPipeline(steps=[WarnStep()])
+        pipeline = _make_pipeline(steps=[WarnStep()])
         ctx = _make_ctx()
         pipeline._run_steps(ctx)
         assert "test warning" in ctx.validation.warnings
 
     def test_step_exception_propagates(self):
-        pipeline = ConversionPipeline(steps=[FailingStep()])
+        pipeline = _make_pipeline(steps=[FailingStep()])
         ctx = _make_ctx()
         with pytest.raises(RuntimeError, match="step failed"):
             pipeline._run_steps(ctx)
@@ -217,7 +234,7 @@ class TestWrite:
             pdf_path=None,
             output_file=output_file,
         )
-        pipeline = ConversionPipeline(steps=[])
+        pipeline = _make_pipeline(output_file=output_file)
         pipeline._write(ctx)
         assert output_file.exists()
         assert output_file.read_text(encoding="utf-8") == "# Hello\n\nWorld"
@@ -229,7 +246,7 @@ class TestWrite:
             pdf_path=None,
             output_file=output_file,
         )
-        pipeline = ConversionPipeline(steps=[])
+        pipeline = _make_pipeline(output_file=output_file)
         pipeline._write(ctx)
         assert output_file.exists()
         assert output_file.read_text(encoding="utf-8") == "content"
@@ -246,12 +263,10 @@ class TestProcess:
     def test_process_merges_runs_steps_and_writes(self, tmp_path):
         output_file = tmp_path / "result.md"
         step = RecordingStep(label="transform", suffix="\n## Added by step")
-        pipeline = ConversionPipeline(steps=[step])
+        pipeline = _make_pipeline(steps=[step], output_file=output_file)
 
         ctx, step_timings = pipeline._process(
             parts=["# Title\n\nSome content"],
-            pdf_path=None,
-            output_file=output_file,
         )
 
         assert output_file.exists()
