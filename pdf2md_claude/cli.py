@@ -131,6 +131,7 @@ Examples:
   %(prog)s --rules my_rules.txt --show-prompt    Show merged prompt
         """,
     )
+    # -- Top-level arguments ---------------------------------------------------
     parser.add_argument(
         "pdfs",
         nargs="*",
@@ -155,28 +156,23 @@ Examples:
              "(also clears cached chunks)",
     )
     parser.add_argument(
-        "--remerge",
-        action="store_true",
-        help="Re-run merge + validate + write from cached chunks "
-             "(no API calls, no ANTHROPIC_API_KEY needed). "
-             "Useful for debugging merge/post-processing logic.",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
-    parser.add_argument(
-        "--max-pages",
-        type=int,
-        metavar="N",
-        help="Convert only the first N pages using the full pipeline "
-             "(chunked, with title extraction and merging). Useful for debugging",
+
+    # -- Conversion group ------------------------------------------------------
+    conv_group = parser.add_argument_group(
+        "conversion",
+        "Control the PDF-to-Markdown conversion process.",
     )
-    parser.add_argument(
-        "--cache",
-        action="store_true",
-        help="Enable prompt caching (1h TTL) on system prompt and PDF content. "
-             "Reduces cost on re-runs with the same PDF chunks (useful for "
-             "debugging prompts/pipelines). First run pays ~2x write cost, "
-             "subsequent runs within 1h pay ~0.1x read cost.",
+    conv_group.add_argument(
+        "--model",
+        choices=list(MODELS.keys()),
+        default=DEFAULT_MODEL_ALIAS,
+        help="Claude model to use (default: %(default)s).",
     )
-    parser.add_argument(
+    conv_group.add_argument(
         "--pages-per-chunk",
         type=int,
         default=DEFAULT_PAGES_PER_CHUNK,
@@ -185,14 +181,42 @@ Examples:
              "Smaller values improve quality but increase API calls. "
              "Must not exceed the API limit of 100 pages per request.",
     )
-    parser.add_argument(
+    conv_group.add_argument(
+        "--max-pages",
+        type=int,
+        metavar="N",
+        help="Convert only the first N pages using the full pipeline "
+             "(chunked, with title extraction and merging). Useful for debugging",
+    )
+    conv_group.add_argument(
+        "--cache",
+        action="store_true",
+        help="Enable prompt caching (1h TTL) on system prompt and PDF content. "
+             "Reduces cost on re-runs with the same PDF chunks (useful for "
+             "debugging prompts/pipelines). First run pays ~2x write cost, "
+             "subsequent runs within 1h pay ~0.1x read cost.",
+    )
+    conv_group.add_argument(
+        "--remerge",
+        action="store_true",
+        help="Re-run merge + validate + write from cached chunks "
+             "(no API calls, no ANTHROPIC_API_KEY needed). "
+             "Useful for debugging merge/post-processing logic.",
+    )
+
+    # -- Image extraction group ------------------------------------------------
+    img_group = parser.add_argument_group(
+        "image extraction",
+        "Control how images are extracted from PDF and injected into Markdown.",
+    )
+    img_group.add_argument(
         "--no-images",
         action="store_true",
         help="Skip image extraction. By default, IMAGE_RECT bounding boxes "
              "emitted by Claude are rendered from the PDF and injected as "
              "image files alongside the Markdown output.",
     )
-    parser.add_argument(
+    img_group.add_argument(
         "--image-mode",
         choices=[m.value for m in ImageMode],
         default=ImageMode.AUTO.value,
@@ -202,7 +226,7 @@ Examples:
              "bounding box directly; 'debug' renders all variants "
              "side-by-side in an HTML table (default: %(default)s).",
     )
-    parser.add_argument(
+    img_group.add_argument(
         "--image-dpi",
         type=int,
         default=DEFAULT_IMAGE_DPI,
@@ -210,20 +234,28 @@ Examples:
         help="DPI for page-region rendering — vector diagrams, composites, "
              f"and snap/bbox modes (default: {DEFAULT_IMAGE_DPI}).",
     )
-    parser.add_argument(
+    img_group.add_argument(
         "--strip-ai-descriptions",
         action="store_true",
         help="Remove AI-generated image description blocks from the output. "
              "These are textual descriptions Claude generates for images, "
              "wrapped in IMAGE_AI_GENERATED_DESCRIPTION markers.",
     )
-    parser.add_argument(
-        "--model",
-        choices=list(MODELS.keys()),
-        default=DEFAULT_MODEL_ALIAS,
-        help="Claude model to use (default: %(default)s).",
+
+    # -- Custom rules group ----------------------------------------------------
+    rules_group = parser.add_argument_group(
+        "custom rules",
+        "Customize the system prompt via rules files.",
     )
-    parser.add_argument(
+    rules_group.add_argument(
+        "--rules",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Custom rules file (replace/append/add rules). "
+             "Use -f to reconvert after changing rules.",
+    )
+    rules_group.add_argument(
         "--init-rules",
         type=Path,
         nargs="?",
@@ -233,24 +265,12 @@ Examples:
         help="Generate a rules template and exit "
              f"(default: {AUTO_RULES_FILENAME}).",
     )
-    parser.add_argument(
-        "--rules",
-        type=Path,
-        default=None,
-        metavar="FILE",
-        help="Custom rules file (replace/append/add rules). "
-             "Use -f to reconvert after changing rules.",
-    )
-    parser.add_argument(
+    rules_group.add_argument(
         "--show-prompt",
         action="store_true",
         help="Print the system prompt to stdout and exit.",
     )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
+
     return parser
 
 
