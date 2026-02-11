@@ -293,7 +293,7 @@ def generate_rules_template(path: Path) -> None:
     """Write a fully commented rules template to *path*.
 
     The generated file documents all directives and contains every
-    built-in rule (preamble + 9 numbered rules) as commented-out
+    built-in rule (preamble + 8 numbered rules) as commented-out
     ``@replace`` blocks.  Loading the file produces zero changes.
 
     Parameters

@@ -186,7 +186,8 @@ class ValidateStep:
 class PipelineResult:
     """Result of the full single-document conversion pipeline.
 
-    Returned by :meth:`ConversionPipeline.convert` for the CLI to consume.
+    Returned by :meth:`ConversionPipeline.convert` and
+    :meth:`ConversionPipeline.remerge` for the CLI to consume.
     Does **not** keep the merged markdown in memory (it is on disk).
     """
 

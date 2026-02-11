@@ -484,7 +484,7 @@ _SECTION_HEADING_RE = re.compile(
 
 
 def _check_heading_sequence(markdown: str, result: ValidationResult) -> None:
-    """Warn if numbered section headings have large gaps."""
+    """Warn if numbered section headings have gaps (missing sections)."""
     headings = _SECTION_HEADING_RE.findall(markdown)
 
     if len(headings) < 2:
@@ -563,7 +563,7 @@ def _check_duplicate_headings(markdown: str, result: ValidationResult) -> None:
 
 
 # Regex to extract binary values from HTML table cells.
-# Matches patterns like "0000b", "1010b", "0100 1111b" inside <td> content.
+# Matches patterns like "0000b", "1010b", "01001111b" inside <td> content.
 _BINARY_IN_TD_RE = re.compile(
     r"<td[^>]*>\s*([01]{4,8})b\s*</td>",
 )

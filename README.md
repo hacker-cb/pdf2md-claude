@@ -159,7 +159,7 @@ Use `--show-prompt` to inspect the final merged prompt before converting.
 ```
 pdf2md-claude/
 ├── pdf2md_claude/              # Main package
-│   ├── __init__.py             # Package exports (lazy imports)
+│   ├── __init__.py             # Package version export
 │   ├── __main__.py             # python -m pdf2md_claude entry point
 │   ├── cli.py                  # CLI argument parsing and orchestration
 │   ├── client.py               # Anthropic API client setup
@@ -178,6 +178,7 @@ pdf2md-claude/
 │   ├── test_converter.py
 │   ├── test_images.py
 │   ├── test_markers.py
+│   ├── test_pipeline.py
 │   ├── test_rules.py
 │   ├── test_table_merger.py
 │   ├── test_validator.py

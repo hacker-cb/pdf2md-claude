@@ -92,6 +92,9 @@ def setup_colorized_logging():
 def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path:
     """Resolve output file path for a given PDF.
 
+    *suffix* is inserted between the stem and ``.md`` extension
+    (e.g. ``"_first10"`` when ``--max-pages`` is used, or ``""``).
+
     Default: Markdown file is placed next to the source PDF.
     With --output-dir: all output goes to the specified directory.
     """

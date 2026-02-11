@@ -45,8 +45,8 @@ def _extract_pages(markdown: str) -> dict[int, str]:
     """Extract a mapping of page_number -> full page block (BEGIN to END).
 
     Each value includes the PAGE_BEGIN and PAGE_END markers.
-    Content outside any page markers is attached to the nearest preceding
-    page or dropped if before the first marker.
+    Content outside any page markers (between pages or before the first
+    marker) is dropped.
     """
     pages: dict[int, str] = {}
     for match in _PAGE_BLOCK_RE.finditer(markdown):
@@ -270,7 +270,7 @@ def merge_continued_tables(markdown: str) -> str:
 def _extract_page_markers(text: str) -> str:
     """Extract PDF_PAGE_BEGIN/END markers from a text region.
 
-    Returns all page markers found in *text* as a newline-joined string,
+    Returns all page markers found in *text* as a double-newline-joined string,
     preserving their order.  Non-marker content (TABLE_CONTINUE marker,
     "(continued)" titles, whitespace) is discarded.
     """

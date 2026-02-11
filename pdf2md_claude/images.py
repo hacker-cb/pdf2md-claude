@@ -377,10 +377,13 @@ def _extract_native(
     returned at its original resolution regardless of DPI — native bytes
     are already compressed and optimal.
 
+    When the image has a soft mask, compositing is attempted and the
+    result is returned as PNG.
+
     Falls back to ``None`` (caller should render the raster rect) when:
 
     - ``doc.extract_image()`` fails
-    - The image has a soft mask (transparency) requiring compositing
+    - Soft-mask compositing fails (transparency mask cannot be applied)
 
     Returns:
         ``(image_bytes, extension)`` on success, or ``None``.
@@ -697,7 +700,7 @@ def save_images(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Remove stale images from previous runs.
+    # Remove all files from previous runs.
     for old in output_dir.iterdir():
         if old.is_file():
             old.unlink()

@@ -315,8 +315,10 @@ class WorkDir:
     def chunk_count(self) -> int:
         """Return the expected number of chunks from the manifest.
 
+        Lazy-loads the manifest from disk if it has not been loaded yet.
+
         Raises:
-            RuntimeError: If the manifest has not been loaded yet.
+            RuntimeError: If the manifest file does not exist on disk.
         """
         if self._manifest is None:
             manifest_file = self._path / self._MANIFEST_FILE
