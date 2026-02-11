@@ -36,7 +36,7 @@ def __getattr__(name: str):
         # pdf2md_claude.converter
         "ChunkResult": "pdf2md_claude.converter",
         "ConversionResult": "pdf2md_claude.converter",
-        "convert_pdf": "pdf2md_claude.converter",
+        "PdfConverter": "pdf2md_claude.converter",
         "needs_conversion": "pdf2md_claude.converter",
         # pdf2md_claude.workdir
         "ChunkUsageStats": "pdf2md_claude.workdir",
@@ -46,10 +46,13 @@ def __getattr__(name: str):
         "PAGE_BEGIN": "pdf2md_claude.markers",
         "PAGE_END": "pdf2md_claude.markers",
         # pdf2md_claude.images
-        "extract_and_inject_images": "pdf2md_claude.images",
+        "ImageExtractor": "pdf2md_claude.images",
         "ImageMode": "pdf2md_claude.images",
         "ImageRect": "pdf2md_claude.images",
         "RenderedImage": "pdf2md_claude.images",
+        # pdf2md_claude.pipeline
+        "ConversionPipeline": "pdf2md_claude.pipeline",
+        "PipelineResult": "pdf2md_claude.pipeline",
         # pdf2md_claude.merger
         "merge_chunks": "pdf2md_claude.merger",
         # pdf2md_claude.models
@@ -87,8 +90,8 @@ __all__ = [
     "ChunkUsageStats",
     "ConversionResult",
     "create_client",
-    "convert_pdf",
-    "extract_and_inject_images",
+    "ConversionPipeline",
+    "ImageExtractor",
     "ImageMode",
     "ImageRect",
     "MarkerDef",
@@ -96,6 +99,8 @@ __all__ = [
     "PAGE_END",
     "merge_chunks",
     "needs_conversion",
+    "PdfConverter",
+    "PipelineResult",
     "RenderedImage",
     "validate_output",
     "ValidationResult",

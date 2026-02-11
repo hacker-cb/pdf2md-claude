@@ -13,12 +13,10 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import anthropic
-
-from pdf2md_claude.converter import ConversionResult, PdfConverter, convert_pdf
-from pdf2md_claude.images import ImageExtractor, ImageMode, extract_and_inject_images
+from pdf2md_claude.converter import ConversionResult, PdfConverter
+from pdf2md_claude.images import ImageExtractor, ImageMode
 from pdf2md_claude.merger import merge_chunks, merge_continued_tables
-from pdf2md_claude.models import DocumentUsageStats, ModelConfig
+from pdf2md_claude.models import DocumentUsageStats
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
 from pdf2md_claude.workdir import WorkDir
 
@@ -270,62 +268,3 @@ class ConversionPipeline:
         _log.info("  Saved: %s (%d lines)", output_file, markdown.count("\n") + 1)
 
         return markdown, validation
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible module-level wrappers
-# ---------------------------------------------------------------------------
-
-
-def convert_document(
-    client: anthropic.Anthropic,
-    model: ModelConfig,
-    pdf_path: Path,
-    output_file: Path,
-    pages_per_chunk: int,
-    max_pages: int | None = None,
-    use_cache: bool = False,
-    force: bool = False,
-    extract_images: bool = True,
-    image_mode: ImageMode = ImageMode.AUTO,
-    image_dpi: int | None = None,
-    system_prompt: str | None = None,
-) -> PipelineResult:
-    """Run the full conversion pipeline for a single PDF.
-
-    .. deprecated::
-        Use :class:`ConversionPipeline` with :class:`PdfConverter` directly
-        for new code.  This wrapper exists for backward compatibility.
-    """
-    converter = PdfConverter(client, model, use_cache=use_cache,
-                             system_prompt=system_prompt)
-    pipeline = ConversionPipeline(
-        extract_images=extract_images,
-        image_mode=image_mode,
-        image_dpi=image_dpi,
-    )
-    return pipeline.convert(
-        converter, pdf_path, output_file, pages_per_chunk,
-        max_pages=max_pages, force=force,
-    )
-
-
-def remerge_document(
-    output_file: Path,
-    pdf_path: Path | None = None,
-    extract_images: bool = True,
-    image_mode: ImageMode = ImageMode.AUTO,
-    image_dpi: int | None = None,
-) -> PipelineResult:
-    """Re-run merge + validate + write from cached chunks on disk.
-
-    .. deprecated::
-        Use :class:`ConversionPipeline` directly for new code.
-        This wrapper exists for backward compatibility.
-    """
-    pipeline = ConversionPipeline(
-        extract_images=extract_images,
-        image_mode=image_mode,
-        image_dpi=image_dpi,
-    )
-    return pipeline.remerge(output_file, pdf_path=pdf_path)

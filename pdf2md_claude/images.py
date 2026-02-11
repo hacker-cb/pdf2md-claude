@@ -974,27 +974,3 @@ class ImageExtractor:
             markdown, image_map, rel_prefix,
             image_mode=self._image_mode, info_map=info_map,
         )
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible module-level wrapper
-# ---------------------------------------------------------------------------
-
-
-def extract_and_inject_images(
-    pdf_path: Path,
-    markdown: str,
-    output_dir: Path,
-    image_mode: ImageMode = ImageMode.AUTO,
-    render_dpi: int | None = None,
-) -> str:
-    """Parse IMAGE_RECT markers, extract/render images, save, inject refs.
-
-    .. deprecated::
-        Use :class:`ImageExtractor` directly for new code.  This wrapper
-        exists for backward compatibility.
-    """
-    extractor = ImageExtractor(
-        pdf_path, output_dir, image_mode=image_mode, render_dpi=render_dpi,
-    )
-    return extractor.extract_and_inject(markdown)

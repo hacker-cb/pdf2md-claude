@@ -703,30 +703,3 @@ class PdfConverter:
             cache_read,
             message.stop_reason,
         )
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible module-level wrapper
-# ---------------------------------------------------------------------------
-
-
-def convert_pdf(
-    client: anthropic.Anthropic,
-    model: ModelConfig,
-    pdf_path: Path,
-    work_dir: WorkDir,
-    pages_per_chunk: int,
-    max_pages: int | None = None,
-    use_cache: bool = False,
-    system_prompt: str | None = None,
-) -> ConversionResult:
-    """Convert a PDF to Markdown via Claude's native PDF API.
-
-    .. deprecated::
-        Use :class:`PdfConverter` directly for new code.  This wrapper
-        exists for backward compatibility.
-    """
-    converter = PdfConverter(client, model, use_cache=use_cache,
-                             system_prompt=system_prompt)
-    return converter.convert(pdf_path, work_dir, pages_per_chunk,
-                             max_pages=max_pages)
