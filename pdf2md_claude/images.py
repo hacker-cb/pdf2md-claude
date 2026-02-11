@@ -901,7 +901,83 @@ def _build_debug_table(
 
 
 # ---------------------------------------------------------------------------
-# Convenience: full pipeline step
+# ImageExtractor class
+# ---------------------------------------------------------------------------
+
+
+class ImageExtractor:
+    """Extract and inject images from a PDF into markdown.
+
+    Holds the image extraction configuration (PDF path, output directory,
+    extraction mode, DPI) so callers only need to pass the markdown text.
+
+    Usage::
+
+        extractor = ImageExtractor(pdf_path, output_dir, image_mode=ImageMode.AUTO)
+        updated_markdown = extractor.extract_and_inject(markdown)
+    """
+
+    def __init__(
+        self,
+        pdf_path: Path,
+        output_dir: Path,
+        image_mode: ImageMode = ImageMode.AUTO,
+        render_dpi: int | None = None,
+    ) -> None:
+        self._pdf_path = pdf_path
+        self._output_dir = output_dir
+        self._image_mode = image_mode
+        self._render_dpi = render_dpi
+
+    def extract_and_inject(self, markdown: str) -> str:
+        """Parse IMAGE_RECT markers, extract/render images, save, inject refs.
+
+        Opens the PDF once and passes the document to
+        :func:`render_image_rects` for page-by-page processing.
+
+        Args:
+            markdown: Merged markdown containing ``IMAGE_RECT`` markers.
+
+        Returns:
+            Updated markdown with ``![caption](path)`` references injected.
+        """
+        rects = parse_image_rects(markdown)
+        if not rects:
+            _log.info("  No IMAGE_RECT markers found — skipping image extraction")
+            return markdown
+
+        _log.info("  Found %d IMAGE_RECT marker(s), rendering...", len(rects))
+
+        doc = pymupdf.open(str(self._pdf_path))
+        try:
+            rendered = render_image_rects(
+                doc, rects,
+                image_mode=self._image_mode,
+                render_dpi=self._render_dpi,
+            )
+        finally:
+            doc.close()
+
+        if not rendered:
+            _log.warning("  All IMAGE_RECT markers failed to render")
+            return markdown
+
+        image_map = save_images(rendered, self._output_dir)
+        rel_prefix = self._output_dir.name
+
+        # Build debug info map if needed.
+        info_map: dict[str, str] | None = None
+        if self._image_mode is ImageMode.DEBUG:
+            info_map = {ri.filename: ri.info for ri in rendered if ri.info}
+
+        return inject_image_refs(
+            markdown, image_map, rel_prefix,
+            image_mode=self._image_mode, info_map=info_map,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible module-level wrapper
 # ---------------------------------------------------------------------------
 
 
@@ -914,48 +990,11 @@ def extract_and_inject_images(
 ) -> str:
     """Parse IMAGE_RECT markers, extract/render images, save, inject refs.
 
-    This is the single entry point called from the pipeline.  Opens the
-    PDF once and passes the document to :func:`render_image_rects` for
-    page-by-page processing.
-
-    Args:
-        pdf_path: Path to the source PDF.
-        markdown: Merged markdown containing ``IMAGE_RECT`` markers.
-        output_dir: Directory for saving rendered image files.
-        image_mode: Extraction strategy (default ``AUTO``).
-        render_dpi: Explicit DPI override for page-region renders.
-
-    Returns:
-        Updated markdown with ``![caption](path)`` references injected.
+    .. deprecated::
+        Use :class:`ImageExtractor` directly for new code.  This wrapper
+        exists for backward compatibility.
     """
-    rects = parse_image_rects(markdown)
-    if not rects:
-        _log.info("  No IMAGE_RECT markers found — skipping image extraction")
-        return markdown
-
-    _log.info("  Found %d IMAGE_RECT marker(s), rendering...", len(rects))
-
-    doc = pymupdf.open(str(pdf_path))
-    try:
-        rendered = render_image_rects(
-            doc, rects, image_mode=image_mode, render_dpi=render_dpi,
-        )
-    finally:
-        doc.close()
-
-    if not rendered:
-        _log.warning("  All IMAGE_RECT markers failed to render")
-        return markdown
-
-    image_map = save_images(rendered, output_dir)
-    rel_prefix = output_dir.name
-
-    # Build debug info map if needed.
-    info_map: dict[str, str] | None = None
-    if image_mode is ImageMode.DEBUG:
-        info_map = {ri.filename: ri.info for ri in rendered if ri.info}
-
-    return inject_image_refs(
-        markdown, image_map, rel_prefix,
-        image_mode=image_mode, info_map=info_map,
+    extractor = ImageExtractor(
+        pdf_path, output_dir, image_mode=image_mode, render_dpi=render_dpi,
     )
+    return extractor.extract_and_inject(markdown)

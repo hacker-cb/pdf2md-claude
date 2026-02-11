@@ -124,8 +124,9 @@ class ChunkResult:
 class ConversionResult:
     """Result of converting an entire PDF document.
 
-    Returned by :func:`convert_pdf`.  Contains the per-chunk results,
-    aggregated document-level stats, and counts of cached vs. fresh chunks.
+    Returned by :meth:`PdfConverter.convert`.  Contains the per-chunk
+    results, aggregated document-level stats, and counts of cached vs.
+    fresh chunks.
     """
 
     chunks: list[ChunkResult]
@@ -186,7 +187,7 @@ def plan_chunks(
 
 
 # ---------------------------------------------------------------------------
-# Conversion helpers
+# Conversion helpers (pure, no API context needed)
 # ---------------------------------------------------------------------------
 
 
@@ -225,88 +226,6 @@ def needs_conversion(pdf_path: Path, output_dir: Path, force: bool,
 
 _CACHE_CONTROL = {"type": "ephemeral", "ttl": "1h"}
 """Anthropic prompt-caching control block (1-hour TTL)."""
-
-
-def _send_pdf_to_claude(
-    client: anthropic.Anthropic,
-    model: ModelConfig,
-    pdf_b64: str,
-    user_prompt: str,
-    use_cache: bool = False,
-    system_prompt: str | None = None,
-) -> tuple[str, int, int, int, int, str]:
-    """Send a base64-encoded PDF to Claude and return the response.
-
-    Uses streaming to avoid the 10-minute timeout limit imposed by the
-    Anthropic SDK for large/slow requests (e.g., Opus models with PDF input).
-
-    When ``use_cache`` is True, adds ``cache_control`` breakpoints on the
-    system prompt and the PDF document block so that subsequent requests
-    with the same system+PDF prefix hit the cache (1h TTL).
-
-    When ``system_prompt`` is provided, it replaces the built-in
-    ``SYSTEM_PROMPT``.
-
-    Returns:
-        Tuple of (markdown_text, input_tokens, output_tokens,
-        cache_creation_tokens, cache_read_tokens, stop_reason).
-    """
-    # Build system prompt (with optional cache_control).
-    system_block: dict = {
-        "type": "text",
-        "text": system_prompt if system_prompt is not None else SYSTEM_PROMPT,
-    }
-    if use_cache:
-        system_block["cache_control"] = _CACHE_CONTROL
-
-    # Build PDF document block (with optional cache_control).
-    doc_block: dict = {
-        "type": "document",
-        "source": {
-            "type": "base64",
-            "media_type": "application/pdf",
-            "data": pdf_b64,
-        },
-    }
-    if use_cache:
-        doc_block["cache_control"] = _CACHE_CONTROL
-
-    with client.messages.stream(
-        model=model.model_id,
-        max_tokens=model.max_output_tokens,
-        system=[system_block],
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    doc_block,
-                    {
-                        "type": "text",
-                        "text": user_prompt,
-                    },
-                ],
-            }
-        ],
-    ) as stream:
-        message = stream.get_final_message()
-
-    markdown = ""
-    for block in message.content:
-        if block.type == "text":
-            markdown += block.text
-
-    # Extract cache token counts (may be 0 or absent when caching is off).
-    cache_creation = getattr(message.usage, "cache_creation_input_tokens", 0) or 0
-    cache_read = getattr(message.usage, "cache_read_input_tokens", 0) or 0
-
-    return (
-        markdown,
-        message.usage.input_tokens,
-        message.usage.output_tokens,
-        cache_creation,
-        cache_read,
-        message.stop_reason,
-    )
 
 
 def _get_context_tail(
@@ -411,7 +330,383 @@ def _remap_page_markers(markdown: str, page_start: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# PdfConverter class
+# ---------------------------------------------------------------------------
+
+
+class PdfConverter:
+    """Chunked PDF-to-Markdown converter using Claude's native PDF API.
+
+    Holds the API context (client, model, caching, system prompt) as
+    instance state so that it does not need to be threaded through every
+    internal method call.
+
+    Usage::
+
+        converter = PdfConverter(client, model, use_cache=True)
+        result = converter.convert(pdf_path, work_dir, pages_per_chunk=10)
+    """
+
+    def __init__(
+        self,
+        client: anthropic.Anthropic,
+        model: ModelConfig,
+        use_cache: bool = False,
+        system_prompt: str | None = None,
+    ) -> None:
+        self._client = client
+        self._model = model
+        self._use_cache = use_cache
+        self._system_prompt = system_prompt
+
+    # -- public API --------------------------------------------------------
+
+    def convert(
+        self,
+        pdf_path: Path,
+        work_dir: WorkDir,
+        pages_per_chunk: int,
+        max_pages: int | None = None,
+    ) -> ConversionResult:
+        """Convert a PDF to Markdown via Claude's native PDF API.
+
+        Chunked conversion with context passing between disjoint chunks.
+        Splits the document into small chunks (``pages_per_chunk`` pages
+        each).  Each chunk is persisted to disk immediately
+        via ``work_dir``; on resume, already-cached chunks are skipped.
+
+        Args:
+            pdf_path: Path to the source PDF.
+            work_dir: Work directory for chunk persistence and resume.
+            pages_per_chunk: Number of PDF pages per conversion chunk.
+                Must not exceed ``model.max_pdf_pages``.
+            max_pages: Optional cap on total pages (from page 1).
+                Useful for debugging (e.g., ``max_pages=5`` to test title
+                extraction without converting all pages).
+
+        Returns:
+            ``ConversionResult`` with per-chunk results, aggregated stats,
+            and cached/fresh chunk counts.
+        """
+        # Enforce API page limit: each chunk must fit within max_pdf_pages.
+        if pages_per_chunk > self._model.max_pdf_pages:
+            raise ValueError(
+                f"pages_per_chunk ({pages_per_chunk}) exceeds API limit of "
+                f"{self._model.max_pdf_pages} pages per request"
+            )
+
+        total_pages = get_pdf_page_count(pdf_path)
+
+        # Cap total pages if requested (for debugging).
+        if max_pages is not None and max_pages < total_pages:
+            _log.info("  Limiting to first %d of %d pages (--max-pages)", max_pages, total_pages)
+            total_pages = max_pages
+
+        return self._convert_chunked(pdf_path, work_dir, total_pages, pages_per_chunk)
+
+    # -- internal methods --------------------------------------------------
+
+    def _convert_chunked(
+        self,
+        pdf_path: Path,
+        work_dir: WorkDir,
+        total_pages: int,
+        pages_per_chunk: int,
+    ) -> ConversionResult:
+        """Convert a PDF by splitting into disjoint chunks with context passing.
+
+        All cross-chunk state flows through ``work_dir`` on disk -- no
+        ``prev_context`` variable or ``results`` accumulator is carried
+        across loop iterations.  Each chunk is saved to disk immediately
+        after conversion; on resume, cached chunks are skipped.
+        """
+        doc_name = pdf_path.stem
+        chunks = plan_chunks(total_pages, pages_per_chunk)
+        num_chunks = len(chunks)
+
+        _log.info(
+            "  Document has %d pages — splitting into %d chunks "
+            "(%d pages/chunk)",
+            total_pages, num_chunks, pages_per_chunk,
+        )
+
+        # Validate work directory manifest and discover cached chunks.
+        work_dir.create_or_validate(
+            pdf_path,
+            total_pages=total_pages,
+            pages_per_chunk=pages_per_chunk,
+            max_pages=None,  # already applied above
+            model_id=self._model.model_id,
+            num_chunks=num_chunks,
+        )
+
+        # Conversion loop: no results list, no prev_context across iterations.
+        cached_count = 0
+        fresh_elapsed: list[float] = []  # for ETA display only
+        conversion_start = time.time()
+
+        for chunk in chunks:
+            # 1. Check if chunk is cached on disk.
+            if work_dir.has_chunk(chunk.index):
+                cached_count += 1
+                _log.info(
+                    "  Chunk %d/%d: pages %d-%d (cached, skipping)",
+                    chunk.index + 1, num_chunks,
+                    chunk.page_start, chunk.page_end,
+                )
+                continue
+
+            # Compute ETA from freshly-converted chunks only.
+            if fresh_elapsed:
+                elapsed = time.time() - conversion_start
+                avg_time = sum(fresh_elapsed) / len(fresh_elapsed)
+                remaining_fresh = (num_chunks - chunk.index - cached_count) * avg_time
+                time_str = f" ({fmt_duration(elapsed)} elapsed, ETA ~{fmt_duration(remaining_fresh)})"
+            else:
+                time_str = ""
+
+            _log.info(
+                "  Chunk %d/%d: pages %d-%d (%d pages)%s...",
+                chunk.index + 1, num_chunks,
+                chunk.page_start, chunk.page_end, chunk.page_count,
+                time_str,
+            )
+
+            # 2. Load prev_context from DISK (not from a variable).
+            if chunk.index > 0:
+                prev_context = work_dir.load_chunk_context(chunk.index - 1)
+            else:
+                prev_context = ""
+
+            # Select context note based on chunk position.
+            if chunk.is_first:
+                context_note = CONTEXT_NOTE_START
+            elif chunk.is_last:
+                context_note = CONTEXT_NOTE_END
+            else:
+                context_note = CONTEXT_NOTE_MIDDLE
+
+            # Build previous context block.
+            if prev_context:
+                previous_context_block = PREVIOUS_CONTEXT_BLOCK.format(
+                    prev_context=prev_context,
+                )
+            else:
+                previous_context_block = ""
+
+            prompt = CONVERT_CHUNK_PROMPT.format(
+                chunk_num=chunk.index + 1,
+                total_chunks=num_chunks,
+                context_note=context_note,
+                previous_context_block=previous_context_block,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                page_count=chunk.page_count,
+                page_start_plus_1=chunk.page_start + 1,
+            )
+
+            # 3. Convert via API.
+            chunk_start = time.time()
+            markdown, inp, out, c_create, c_read = self._convert_chunk(
+                pdf_path, chunk, prompt,
+            )
+            chunk_elapsed = time.time() - chunk_start
+
+            # Remap page markers if Claude used sub-PDF viewer numbers.
+            markdown = _remap_page_markers(markdown, chunk.page_start)
+
+            total_inp = inp + c_create + c_read
+            total_elapsed_so_far = time.time() - conversion_start
+            if chunk.index > 0:
+                time_done_str = (
+                    f"{fmt_duration(chunk_elapsed)}, "
+                    f"total {fmt_duration(total_elapsed_so_far)}"
+                )
+            else:
+                time_done_str = fmt_duration(chunk_elapsed)
+            _log.info(
+                "  ✓ Chunk %d/%d done (%s) (%s input, %s output)",
+                chunk.index + 1, num_chunks,
+                time_done_str, f"{total_inp:,}", f"{out:,}",
+            )
+            if c_create or c_read:
+                _log.info(
+                    "    Cache: %s written, %s read",
+                    f"{c_create:,}", f"{c_read:,}",
+                )
+
+            # Extract context tail for the next chunk.
+            context_tail = _get_context_tail(markdown)
+
+            # 4. Build typed ChunkUsageStats and save to disk IMMEDIATELY.
+            usage = ChunkUsageStats(
+                index=chunk.index,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                input_tokens=inp,
+                output_tokens=out,
+                cache_creation_tokens=c_create,
+                cache_read_tokens=c_read,
+                cost=calculate_cost(self._model, inp, out, c_create, c_read),
+                elapsed_seconds=chunk_elapsed,
+            )
+            work_dir.save_chunk(chunk.index, markdown, context_tail, usage)
+            fresh_elapsed.append(chunk_elapsed)
+
+        total_elapsed = time.time() - conversion_start
+
+        # 5. Reconstruct all results from disk.
+        results: list[ChunkResult] = []
+        for chunk in chunks:
+            results.append(ChunkResult(
+                plan=chunk,
+                markdown=work_dir.load_chunk_markdown(chunk.index),
+                context_tail=work_dir.load_chunk_context(chunk.index),
+                usage=work_dir.load_chunk_usage(chunk.index),
+            ))
+
+        # 6. Aggregate stats from disk and save stats.json.
+        stats = DocumentUsageStats(
+            doc_name=doc_name,
+            pages=total_pages,
+            chunks=num_chunks,
+            input_tokens=sum(r.usage.input_tokens for r in results),
+            output_tokens=sum(r.usage.output_tokens for r in results),
+            cache_creation_tokens=sum(r.usage.cache_creation_tokens for r in results),
+            cache_read_tokens=sum(r.usage.cache_read_tokens for r in results),
+            cost=sum(r.usage.cost for r in results),
+            elapsed_seconds=total_elapsed,
+        )
+        work_dir.save_stats(stats)
+
+        fresh_count = num_chunks - cached_count
+        if cached_count > 0:
+            _log.info(
+                "  Chunks: %d fresh, %d cached, %d total",
+                fresh_count, cached_count, num_chunks,
+            )
+
+        return ConversionResult(
+            chunks=results,
+            stats=stats,
+            cached_chunks=cached_count,
+            fresh_chunks=fresh_count,
+        )
+
+    def _convert_chunk(
+        self,
+        pdf_path: Path,
+        chunk: ChunkPlan,
+        prompt: str,
+    ) -> tuple[str, int, int, int, int]:
+        """Convert a single chunk of PDF pages to Markdown.
+
+        Returns:
+            Tuple of (markdown, input_tokens, output_tokens,
+            cache_creation_tokens, cache_read_tokens).
+
+        Raises:
+            RuntimeError: If the output is truncated (hit max_tokens).
+        """
+        pdf_b64 = extract_pdf_pages(pdf_path, chunk.page_start, chunk.page_end)
+
+        start = time.time()
+        markdown, inp, out, c_create, c_read, stop = self._send_to_claude(
+            pdf_b64, prompt,
+        )
+        elapsed = time.time() - start
+
+        _log.debug(
+            "    Chunk pages %d-%d: %.1fs, stop=%s",
+            chunk.page_start, chunk.page_end, elapsed, stop,
+        )
+
+        if stop == "max_tokens":
+            raise RuntimeError(
+                f"Chunk pages {chunk.page_start}-{chunk.page_end} truncated "
+                f"(hit {self._model.max_output_tokens} max_tokens after {elapsed:.1f}s). "
+                f"Try reducing --pages-per-chunk (currently {chunk.page_count})."
+            )
+
+        return markdown, inp, out, c_create, c_read
+
+    def _send_to_claude(
+        self,
+        pdf_b64: str,
+        user_prompt: str,
+    ) -> tuple[str, int, int, int, int, str]:
+        """Send a base64-encoded PDF to Claude and return the response.
+
+        Uses streaming to avoid the 10-minute timeout limit imposed by the
+        Anthropic SDK for large/slow requests (e.g., Opus models with PDF
+        input).
+
+        Returns:
+            Tuple of (markdown_text, input_tokens, output_tokens,
+            cache_creation_tokens, cache_read_tokens, stop_reason).
+        """
+        # Build system prompt (with optional cache_control).
+        sys_text = (
+            self._system_prompt
+            if self._system_prompt is not None
+            else SYSTEM_PROMPT
+        )
+        system_block: dict = {"type": "text", "text": sys_text}
+        if self._use_cache:
+            system_block["cache_control"] = _CACHE_CONTROL
+
+        # Build PDF document block (with optional cache_control).
+        doc_block: dict = {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": pdf_b64,
+            },
+        }
+        if self._use_cache:
+            doc_block["cache_control"] = _CACHE_CONTROL
+
+        with self._client.messages.stream(
+            model=self._model.model_id,
+            max_tokens=self._model.max_output_tokens,
+            system=[system_block],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        doc_block,
+                        {
+                            "type": "text",
+                            "text": user_prompt,
+                        },
+                    ],
+                }
+            ],
+        ) as stream:
+            message = stream.get_final_message()
+
+        markdown = ""
+        for block in message.content:
+            if block.type == "text":
+                markdown += block.text
+
+        # Extract cache token counts (may be 0 or absent when caching is off).
+        cache_creation = getattr(message.usage, "cache_creation_input_tokens", 0) or 0
+        cache_read = getattr(message.usage, "cache_read_input_tokens", 0) or 0
+
+        return (
+            markdown,
+            message.usage.input_tokens,
+            message.usage.output_tokens,
+            cache_creation,
+            cache_read,
+            message.stop_reason,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible module-level wrapper
 # ---------------------------------------------------------------------------
 
 
@@ -427,303 +722,11 @@ def convert_pdf(
 ) -> ConversionResult:
     """Convert a PDF to Markdown via Claude's native PDF API.
 
-    Chunked conversion with context passing between disjoint chunks.
-    Splits the document into small chunks (``pages_per_chunk`` pages
-    each).  Each chunk is persisted to disk immediately
-    via ``work_dir``; on resume, already-cached chunks are skipped.
-
-    Args:
-        client: Configured Anthropic client.
-        model: Model configuration.
-        pdf_path: Path to the source PDF.
-        work_dir: Work directory for chunk persistence and resume.
-        pages_per_chunk: Number of PDF pages per conversion chunk.
-            Must not exceed ``model.max_pdf_pages``.
-        max_pages: Optional cap on total pages (from page 1).
-            Useful for debugging (e.g., ``max_pages=5`` to test title
-            extraction without converting all pages).
-        use_cache: Enable prompt caching (1h TTL) on system prompt and
-            PDF content.  Reduces cost on re-runs with the same PDF.
-        system_prompt: Optional override for the built-in system prompt.
-            When ``None`` (default), uses ``SYSTEM_PROMPT``.
-
-    Returns:
-        ``ConversionResult`` with per-chunk results, aggregated stats,
-        and cached/fresh chunk counts.
+    .. deprecated::
+        Use :class:`PdfConverter` directly for new code.  This wrapper
+        exists for backward compatibility.
     """
-    # Enforce API page limit: each chunk must fit within max_pdf_pages.
-    if pages_per_chunk > model.max_pdf_pages:
-        raise ValueError(
-            f"pages_per_chunk ({pages_per_chunk}) exceeds API limit of "
-            f"{model.max_pdf_pages} pages per request"
-        )
-
-    total_pages = get_pdf_page_count(pdf_path)
-
-    # Cap total pages if requested (for debugging).
-    if max_pages is not None and max_pages < total_pages:
-        _log.info("  Limiting to first %d of %d pages (--max-pages)", max_pages, total_pages)
-        total_pages = max_pages
-
-    return _convert_chunked(
-        client, model, pdf_path, work_dir, total_pages, pages_per_chunk, use_cache,
-        system_prompt=system_prompt,
-    )
-
-
-def _convert_chunked(
-    client: anthropic.Anthropic,
-    model: ModelConfig,
-    pdf_path: Path,
-    work_dir: WorkDir,
-    total_pages: int,
-    pages_per_chunk: int,
-    use_cache: bool = False,
-    system_prompt: str | None = None,
-) -> ConversionResult:
-    """Convert a PDF by splitting into disjoint chunks with context passing.
-
-    All cross-chunk state flows through ``work_dir`` on disk -- no
-    ``prev_context`` variable or ``results`` accumulator is carried
-    across loop iterations.  Each chunk is saved to disk immediately
-    after conversion; on resume, cached chunks are skipped.
-
-    Args:
-        client: Configured Anthropic client.
-        model: Model configuration.
-        pdf_path: Path to the source PDF.
-        work_dir: Work directory for chunk persistence.
-        total_pages: Total number of pages in the PDF.
-        pages_per_chunk: Number of PDF pages per conversion chunk.
-        use_cache: Enable prompt caching on system prompt and PDF content.
-        system_prompt: Optional override for the built-in system prompt.
-
-    Returns:
-        ``ConversionResult`` with per-chunk results, aggregated stats,
-        and cached/fresh chunk counts.
-    """
-    doc_name = pdf_path.stem
-    chunks = plan_chunks(total_pages, pages_per_chunk)
-    num_chunks = len(chunks)
-
-    _log.info(
-        "  Document has %d pages — splitting into %d chunks "
-        "(%d pages/chunk)",
-        total_pages, num_chunks, pages_per_chunk,
-    )
-
-    # Validate work directory manifest and discover cached chunks.
-    work_dir.create_or_validate(
-        pdf_path,
-        total_pages=total_pages,
-        pages_per_chunk=pages_per_chunk,
-        max_pages=None,  # already applied above
-        model_id=model.model_id,
-        num_chunks=num_chunks,
-    )
-
-    # Conversion loop: no results list, no prev_context across iterations.
-    cached_count = 0
-    fresh_elapsed: list[float] = []  # for ETA display only
-    conversion_start = time.time()
-
-    for chunk in chunks:
-        # 1. Check if chunk is cached on disk.
-        if work_dir.has_chunk(chunk.index):
-            cached_count += 1
-            _log.info(
-                "  Chunk %d/%d: pages %d-%d (cached, skipping)",
-                chunk.index + 1, num_chunks,
-                chunk.page_start, chunk.page_end,
-            )
-            continue
-
-        # Compute ETA from freshly-converted chunks only.
-        if fresh_elapsed:
-            elapsed = time.time() - conversion_start
-            avg_time = sum(fresh_elapsed) / len(fresh_elapsed)
-            remaining_fresh = (num_chunks - chunk.index - cached_count) * avg_time
-            time_str = f" ({fmt_duration(elapsed)} elapsed, ETA ~{fmt_duration(remaining_fresh)})"
-        else:
-            time_str = ""
-
-        _log.info(
-            "  Chunk %d/%d: pages %d-%d (%d pages)%s...",
-            chunk.index + 1, num_chunks,
-            chunk.page_start, chunk.page_end, chunk.page_count,
-            time_str,
-        )
-
-        # 2. Load prev_context from DISK (not from a variable).
-        if chunk.index > 0:
-            prev_context = work_dir.load_chunk_context(chunk.index - 1)
-        else:
-            prev_context = ""
-
-        # Select context note based on chunk position.
-        if chunk.is_first:
-            context_note = CONTEXT_NOTE_START
-        elif chunk.is_last:
-            context_note = CONTEXT_NOTE_END
-        else:
-            context_note = CONTEXT_NOTE_MIDDLE
-
-        # Build previous context block.
-        if prev_context:
-            previous_context_block = PREVIOUS_CONTEXT_BLOCK.format(
-                prev_context=prev_context,
-            )
-        else:
-            previous_context_block = ""
-
-        prompt = CONVERT_CHUNK_PROMPT.format(
-            chunk_num=chunk.index + 1,
-            total_chunks=num_chunks,
-            context_note=context_note,
-            previous_context_block=previous_context_block,
-            page_start=chunk.page_start,
-            page_end=chunk.page_end,
-            page_count=chunk.page_count,
-            page_start_plus_1=chunk.page_start + 1,
-        )
-
-        # 3. Convert via API.
-        chunk_start = time.time()
-        markdown, inp, out, c_create, c_read = _convert_chunk(
-            client, model, pdf_path, chunk, prompt, use_cache=use_cache,
-            system_prompt=system_prompt,
-        )
-        chunk_elapsed = time.time() - chunk_start
-
-        # Remap page markers if Claude used sub-PDF viewer numbers.
-        markdown = _remap_page_markers(markdown, chunk.page_start)
-
-        total_inp = inp + c_create + c_read
-        total_elapsed_so_far = time.time() - conversion_start
-        if chunk.index > 0:
-            time_done_str = (
-                f"{fmt_duration(chunk_elapsed)}, "
-                f"total {fmt_duration(total_elapsed_so_far)}"
-            )
-        else:
-            time_done_str = fmt_duration(chunk_elapsed)
-        _log.info(
-            "  ✓ Chunk %d/%d done (%s) (%s input, %s output)",
-            chunk.index + 1, num_chunks,
-            time_done_str, f"{total_inp:,}", f"{out:,}",
-        )
-        if c_create or c_read:
-            _log.info(
-                "    Cache: %s written, %s read",
-                f"{c_create:,}", f"{c_read:,}",
-            )
-
-        # Extract context tail for the next chunk.
-        context_tail = _get_context_tail(markdown)
-
-        # 4. Build typed ChunkUsageStats and save to disk IMMEDIATELY.
-        usage = ChunkUsageStats(
-            index=chunk.index,
-            page_start=chunk.page_start,
-            page_end=chunk.page_end,
-            input_tokens=inp,
-            output_tokens=out,
-            cache_creation_tokens=c_create,
-            cache_read_tokens=c_read,
-            cost=calculate_cost(model, inp, out, c_create, c_read),
-            elapsed_seconds=chunk_elapsed,
-        )
-        work_dir.save_chunk(chunk.index, markdown, context_tail, usage)
-        fresh_elapsed.append(chunk_elapsed)
-
-    total_elapsed = time.time() - conversion_start
-
-    # 5. Reconstruct all results from disk.
-    results: list[ChunkResult] = []
-    for chunk in chunks:
-        results.append(ChunkResult(
-            plan=chunk,
-            markdown=work_dir.load_chunk_markdown(chunk.index),
-            context_tail=work_dir.load_chunk_context(chunk.index),
-            usage=work_dir.load_chunk_usage(chunk.index),
-        ))
-
-    # 6. Aggregate stats from disk and save stats.json.
-    stats = DocumentUsageStats(
-        doc_name=doc_name,
-        pages=total_pages,
-        chunks=num_chunks,
-        input_tokens=sum(r.usage.input_tokens for r in results),
-        output_tokens=sum(r.usage.output_tokens for r in results),
-        cache_creation_tokens=sum(r.usage.cache_creation_tokens for r in results),
-        cache_read_tokens=sum(r.usage.cache_read_tokens for r in results),
-        cost=sum(r.usage.cost for r in results),
-        elapsed_seconds=total_elapsed,
-    )
-    work_dir.save_stats(stats)
-
-    fresh_count = num_chunks - cached_count
-    if cached_count > 0:
-        _log.info(
-            "  Chunks: %d fresh, %d cached, %d total",
-            fresh_count, cached_count, num_chunks,
-        )
-
-    return ConversionResult(
-        chunks=results,
-        stats=stats,
-        cached_chunks=cached_count,
-        fresh_chunks=fresh_count,
-    )
-
-
-def _convert_chunk(
-    client: anthropic.Anthropic,
-    model: ModelConfig,
-    pdf_path: Path,
-    chunk: ChunkPlan,
-    prompt: str,
-    use_cache: bool = False,
-    system_prompt: str | None = None,
-) -> tuple[str, int, int, int, int]:
-    """Convert a single chunk of PDF pages to Markdown.
-
-    Args:
-        client: Configured Anthropic client.
-        model: Model configuration.
-        pdf_path: Path to the source PDF.
-        chunk: The chunk to convert.
-        prompt: User prompt for this chunk.
-        use_cache: Enable prompt caching on system prompt and PDF content.
-        system_prompt: Optional override for the built-in system prompt.
-
-    Returns:
-        Tuple of (markdown, input_tokens, output_tokens,
-        cache_creation_tokens, cache_read_tokens).
-        Internally checks ``stop_reason`` and raises on truncation.
-
-    Raises:
-        RuntimeError: If the output is truncated (hit max_tokens).
-    """
-    pdf_b64 = extract_pdf_pages(pdf_path, chunk.page_start, chunk.page_end)
-
-    start = time.time()
-    markdown, inp, out, c_create, c_read, stop = _send_pdf_to_claude(
-        client, model, pdf_b64, prompt, use_cache=use_cache,
-        system_prompt=system_prompt,
-    )
-    elapsed = time.time() - start
-
-    _log.debug(
-        "    Chunk pages %d-%d: %.1fs, stop=%s",
-        chunk.page_start, chunk.page_end, elapsed, stop,
-    )
-
-    if stop == "max_tokens":
-        raise RuntimeError(
-            f"Chunk pages {chunk.page_start}-{chunk.page_end} truncated "
-            f"(hit {model.max_output_tokens} max_tokens after {elapsed:.1f}s). "
-            f"Try reducing --pages-per-chunk (currently {chunk.page_count})."
-        )
-
-    return markdown, inp, out, c_create, c_read
+    converter = PdfConverter(client, model, use_cache=use_cache,
+                             system_prompt=system_prompt)
+    return converter.convert(pdf_path, work_dir, pages_per_chunk,
+                             max_pages=max_pages)

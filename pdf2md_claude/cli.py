@@ -20,10 +20,10 @@ from pathlib import Path
 import colorlog
 
 from pdf2md_claude.client import create_client
-from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, needs_conversion
+from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter, needs_conversion
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, DocumentUsageStats, format_summary
-from pdf2md_claude.pipeline import convert_document, remerge_document
+from pdf2md_claude.pipeline import ConversionPipeline
 from pdf2md_claude.prompt import SYSTEM_PROMPT
 from pdf2md_claude.rules import (
     AUTO_RULES_FILENAME,
@@ -327,6 +327,14 @@ Examples:
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Create the pipeline once (shared image settings for all PDFs).
+        image_mode = ImageMode(args.image_mode)
+        pipeline = ConversionPipeline(
+            extract_images=not args.no_images,
+            image_mode=image_mode,
+            image_dpi=args.image_dpi,
+        )
+
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []
         success = 0
@@ -352,9 +360,15 @@ Examples:
             try:
                 output_file = resolve_output(pdf_path, suffix, output_dir)
 
-                # Resolve custom rules for this PDF.
-                system_prompt = None
-                if not remerge:
+                if remerge:
+                    result = pipeline.remerge(
+                        output_file, pdf_path=pdf_path,
+                    )
+                else:
+                    assert client is not None
+
+                    # Resolve custom rules for this PDF.
+                    system_prompt = None
                     rules_path = args.rules
                     if not rules_path:
                         auto_path = pdf_path.parent / AUTO_RULES_FILENAME
@@ -374,28 +388,18 @@ Examples:
                             )
                         system_prompt = rules_cache[resolved_rules]
 
-                image_mode = ImageMode(args.image_mode)
-
-                if remerge:
-                    result = remerge_document(
-                        output_file, pdf_path=pdf_path,
-                        extract_images=not args.no_images,
-                        image_mode=image_mode,
-                        image_dpi=args.image_dpi,
-                    )
-                else:
-                    assert client is not None
-                    result = convert_document(
-                        client, model, pdf_path, output_file,
-                        max_pages=args.max_pages,
+                    converter = PdfConverter(
+                        client, model,
                         use_cache=args.cache,
-                        pages_per_chunk=pages_per_chunk,
-                        force=args.force,
-                        extract_images=not args.no_images,
-                        image_mode=image_mode,
-                        image_dpi=args.image_dpi,
                         system_prompt=system_prompt,
                     )
+                    result = pipeline.convert(
+                        converter, pdf_path, output_file,
+                        pages_per_chunk=pages_per_chunk,
+                        max_pages=args.max_pages,
+                        force=args.force,
+                    )
+
                 all_stats.append(result.stats)
                 success += 1
             except Exception as e:
