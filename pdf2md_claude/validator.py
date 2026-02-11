@@ -569,7 +569,6 @@ _BINARY_IN_TD_RE = re.compile(
 )
 
 
-
 def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:
     """Check for duplicate or non-monotonic binary values in HTML tables.
 

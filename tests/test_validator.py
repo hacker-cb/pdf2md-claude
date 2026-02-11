@@ -13,32 +13,11 @@ from pdf2md_claude.validator import (
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers (shared page-building functions from conftest)
 # ---------------------------------------------------------------------------
 
-def _wrap_pages(content: str, start: int = 1, end: int = 1) -> str:
-    """Wrap content in page markers for a single page range.
-
-    All content is placed inside the first page.  For per-page content
-    use ``_make_pages()`` instead.
-    """
-    parts = []
-    for p in range(start, end + 1):
-        parts.append(f"<!-- PDF_PAGE_BEGIN {p} -->")
-        if p == start:
-            parts.append(content)
-        parts.append(f"<!-- PDF_PAGE_END {p} -->")
-    return "\n".join(parts)
-
-
-def _make_pages(page_contents: dict[int, str]) -> str:
-    """Build markdown with specific content placed on specific pages."""
-    parts = []
-    for page, content in sorted(page_contents.items()):
-        parts.append(f"<!-- PDF_PAGE_BEGIN {page} -->")
-        parts.append(content)
-        parts.append(f"<!-- PDF_PAGE_END {page} -->")
-    return "\n".join(parts)
+from tests.conftest import make_pages as _make_pages
+from tests.conftest import wrap_pages as _wrap_pages
 
 
 # ---------------------------------------------------------------------------

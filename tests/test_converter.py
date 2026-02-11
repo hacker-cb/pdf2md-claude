@@ -399,10 +399,7 @@ class TestPromptFormatting:
 # ---------------------------------------------------------------------------
 
 
-def _make_page(n: int, content: str = "") -> str:
-    """Helper: build a page block with BEGIN/END markers."""
-    body = f"\n{content}\n" if content else "\n"
-    return f"{PAGE_BEGIN.format(n)}{body}{PAGE_END.format(n)}"
+from tests.conftest import make_page as _make_page
 
 
 class TestGetContextTail:

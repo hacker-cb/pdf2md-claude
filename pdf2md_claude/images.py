@@ -27,6 +27,7 @@ from pdf2md_claude.markers import (
     IMAGE_BEGIN,
     IMAGE_END,
     IMAGE_FILENAME_FORMAT,
+    IMAGE_FILENAME_RE,
     IMAGE_RECT,
     IMAGE_REF_RE,
     PAGE_BEGIN,
@@ -497,6 +498,83 @@ def _render_debug_variants(
     return variants
 
 
+def _render_single_block(
+    doc: pymupdf.Document,
+    page: pymupdf.Page,
+    clip: pymupdf.Rect,
+    matched_list: list[PageRaster],
+    page_rasters: list[PageRaster],
+    image_mode: ImageMode,
+    dpi: int,
+) -> tuple[bytes, str]:
+    """Render or extract a single IMAGE block based on mode and raster matches.
+
+    Encapsulates the per-block rendering decision tree: BBOX renders the
+    AI bounding box directly; AUTO tries native extraction then falls back
+    to rendering; SNAP always renders snapped to raster bounds.
+
+    Args:
+        doc: Open pymupdf Document (needed for native extraction).
+        page: The PDF page being rendered.
+        clip: Claude's padded bounding-box rect (absolute points).
+        matched_list: Rasters overlapping the clip.
+        page_rasters: All significant rasters on the page (for logging).
+        image_mode: ``BBOX``, ``AUTO``, or ``SNAP``.
+        dpi: DPI for page-region renders.
+
+    Returns:
+        ``(image_bytes, extension)`` tuple.
+    """
+    # BBOX mode: render raw AI bounding box, skip matching.
+    if image_mode is ImageMode.BBOX:
+        img_bytes, ext = _render_region(page, clip, dpi)
+        _log.debug("      bbox → render at %d DPI", dpi)
+        return img_bytes, ext
+
+    if len(matched_list) == 1:
+        if image_mode is ImageMode.AUTO:
+            result = _extract_native(doc, matched_list[0])
+            if result is not None:
+                _log.debug(
+                    "      native extract: xref=%d, format=%s, "
+                    "%dx%d px",
+                    matched_list[0].xref, result[1],
+                    matched_list[0].width, matched_list[0].height,
+                )
+                return result
+            snap = matched_list[0].rect
+            img_bytes, ext = _render_region(page, snap, dpi)
+            _log.debug(
+                "      native fallback → render raster rect at %d DPI", dpi,
+            )
+            return img_bytes, ext
+
+        # SNAP mode.
+        snap = matched_list[0].rect
+        img_bytes, ext = _render_region(page, snap, dpi)
+        _log.debug("      snap raster rect at %d DPI", dpi)
+        return img_bytes, ext
+
+    if len(matched_list) > 1:
+        union = pymupdf.Rect(matched_list[0].rect)
+        for r in matched_list[1:]:
+            union |= r.rect
+        if union.is_empty or union.is_infinite:
+            union = clip
+        img_bytes, ext = _render_region(page, union, dpi)
+        _log.debug(
+            "      composite (%d rasters) → render union at %d DPI",
+            len(matched_list), dpi,
+        )
+        return img_bytes, ext
+
+    # No rasters matched (or none on page) — render the AI bbox.
+    img_bytes, ext = _render_region(page, clip, dpi)
+    reason = "no rasters on page" if not page_rasters else "unmatched"
+    _log.debug("      %s → render bbox at %d DPI", reason, dpi)
+    return img_bytes, ext
+
+
 def render_image_rects(
     doc: pymupdf.Document,
     rects: list[ImageRect],
@@ -605,59 +683,10 @@ def render_image_rects(
                 continue
 
             # --- Normal modes: single image per block ----------------
-            # BBOX mode: render raw AI bounding box, skip matching.
-            if image_mode is ImageMode.BBOX:
-                img_bytes, ext = _render_region(page, clip, dpi)
-                _log.debug(
-                    "      bbox → render at %d DPI", dpi,
-                )
-
-            elif len(matched_list) == 1:
-                if image_mode is ImageMode.AUTO:
-                    result = _extract_native(doc, matched_list[0])
-                    if result is not None:
-                        img_bytes, ext = result
-                        _log.debug(
-                            "      native extract: xref=%d, format=%s, "
-                            "%dx%d px",
-                            matched_list[0].xref, ext,
-                            matched_list[0].width, matched_list[0].height,
-                        )
-                    else:
-                        snap = matched_list[0].rect
-                        img_bytes, ext = _render_region(page, snap, dpi)
-                        _log.debug(
-                            "      native fallback → render raster rect "
-                            "at %d DPI",
-                            dpi,
-                        )
-                else:
-                    # SNAP mode.
-                    snap = matched_list[0].rect
-                    img_bytes, ext = _render_region(page, snap, dpi)
-                    _log.debug(
-                        "      snap raster rect at %d DPI", dpi,
-                    )
-
-            elif len(matched_list) > 1:
-                matched = matched_list
-                union = pymupdf.Rect(matched[0].rect)
-                for r in matched[1:]:
-                    union |= r.rect
-                if union.is_empty or union.is_infinite:
-                    union = clip
-                img_bytes, ext = _render_region(page, union, dpi)
-                _log.debug(
-                    "      composite (%d rasters) → render union at %d DPI",
-                    len(matched), dpi,
-                )
-
-            else:
-                img_bytes, ext = _render_region(page, clip, dpi)
-                reason = "no rasters on page" if not page_rasters else "unmatched"
-                _log.debug(
-                    "      %s → render bbox at %d DPI", reason, dpi,
-                )
+            img_bytes, ext = _render_single_block(
+                doc, page, clip, matched_list, page_rasters,
+                image_mode, dpi,
+            )
 
             filename = IMAGE_FILENAME_FORMAT.format(
                 page=page_num, idx=base_idx, ext=ext,
@@ -700,9 +729,11 @@ def save_images(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Remove all files from previous runs.
+    # Remove image files from previous runs.  Only deletes files whose
+    # names match IMAGE_FILENAME_RE (e.g. img_p003_01.png) to avoid
+    # accidentally removing unrelated files if output_dir is mispointed.
     for old in output_dir.iterdir():
-        if old.is_file():
+        if old.is_file() and IMAGE_FILENAME_RE.match(old.name):
             old.unlink()
 
     page_filenames: dict[int, list[str]] = {}

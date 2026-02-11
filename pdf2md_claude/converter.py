@@ -7,6 +7,7 @@ high-fidelity conversion of dense technical documents.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import time
@@ -104,6 +105,22 @@ class ChunkPlan:
     @property
     def page_count(self) -> int:
         return self.page_end - self.page_start + 1
+
+
+@dataclass
+class ApiResponse:
+    """Raw response from a single Claude API call.
+
+    Replaces unnamed tuples returned by ``_send_to_claude`` and
+    ``_convert_chunk``, making fields self-documenting and easy to extend.
+    """
+
+    markdown: str
+    input_tokens: int
+    output_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
+    stop_reason: str
 
 
 @dataclass
@@ -214,7 +231,6 @@ def needs_conversion(pdf_path: Path, output_dir: Path, force: bool,
             output_dir / f"{pdf_path.stem}{suffix}.chunks" / "manifest.json"
         )
         if manifest_path.exists():
-            import json
             try:
                 data = json.loads(manifest_path.read_text(encoding="utf-8"))
                 if data.get("model_id") != model_id:
@@ -507,15 +523,15 @@ class PdfConverter:
 
             # 3. Convert via API.
             chunk_start = time.time()
-            markdown, inp, out, c_create, c_read = self._convert_chunk(
-                pdf_path, chunk, prompt,
-            )
+            resp = self._convert_chunk(pdf_path, chunk, prompt)
             chunk_elapsed = time.time() - chunk_start
 
             # Remap page markers if Claude used sub-PDF viewer numbers.
-            markdown = _remap_page_markers(markdown, chunk.page_start)
+            markdown = _remap_page_markers(resp.markdown, chunk.page_start)
 
-            total_inp = inp + c_create + c_read
+            total_inp = (
+                resp.input_tokens + resp.cache_creation_tokens + resp.cache_read_tokens
+            )
             total_elapsed_so_far = time.time() - conversion_start
             if chunk.index > 0:
                 time_done_str = (
@@ -527,12 +543,13 @@ class PdfConverter:
             _log.info(
                 "  ✓ Chunk %d/%d done (%s) (%s input, %s output)",
                 chunk.index + 1, num_chunks,
-                time_done_str, f"{total_inp:,}", f"{out:,}",
+                time_done_str, f"{total_inp:,}", f"{resp.output_tokens:,}",
             )
-            if c_create or c_read:
+            if resp.cache_creation_tokens or resp.cache_read_tokens:
                 _log.info(
                     "    Cache: %s written, %s read",
-                    f"{c_create:,}", f"{c_read:,}",
+                    f"{resp.cache_creation_tokens:,}",
+                    f"{resp.cache_read_tokens:,}",
                 )
 
             # Extract context tail for the next chunk.
@@ -543,11 +560,14 @@ class PdfConverter:
                 index=chunk.index,
                 page_start=chunk.page_start,
                 page_end=chunk.page_end,
-                input_tokens=inp,
-                output_tokens=out,
-                cache_creation_tokens=c_create,
-                cache_read_tokens=c_read,
-                cost=calculate_cost(self._model, inp, out, c_create, c_read),
+                input_tokens=resp.input_tokens,
+                output_tokens=resp.output_tokens,
+                cache_creation_tokens=resp.cache_creation_tokens,
+                cache_read_tokens=resp.cache_read_tokens,
+                cost=calculate_cost(
+                    self._model, resp.input_tokens, resp.output_tokens,
+                    resp.cache_creation_tokens, resp.cache_read_tokens,
+                ),
                 elapsed_seconds=chunk_elapsed,
             )
             work_dir.save_chunk(chunk.index, markdown, context_tail, usage)
@@ -598,12 +618,11 @@ class PdfConverter:
         pdf_path: Path,
         chunk: ChunkPlan,
         prompt: str,
-    ) -> tuple[str, int, int, int, int]:
+    ) -> ApiResponse:
         """Convert a single chunk of PDF pages to Markdown.
 
         Returns:
-            Tuple of (markdown, input_tokens, output_tokens,
-            cache_creation_tokens, cache_read_tokens).
+            :class:`ApiResponse` with markdown text and token usage.
 
         Raises:
             RuntimeError: If the output is truncated (hit max_tokens).
@@ -611,30 +630,28 @@ class PdfConverter:
         pdf_b64 = extract_pdf_pages(pdf_path, chunk.page_start, chunk.page_end)
 
         start = time.time()
-        markdown, inp, out, c_create, c_read, stop = self._send_to_claude(
-            pdf_b64, prompt,
-        )
+        resp = self._send_to_claude(pdf_b64, prompt)
         elapsed = time.time() - start
 
         _log.debug(
             "    Chunk pages %d-%d: %.1fs, stop=%s",
-            chunk.page_start, chunk.page_end, elapsed, stop,
+            chunk.page_start, chunk.page_end, elapsed, resp.stop_reason,
         )
 
-        if stop == "max_tokens":
+        if resp.stop_reason == "max_tokens":
             raise RuntimeError(
                 f"Chunk pages {chunk.page_start}-{chunk.page_end} truncated "
                 f"(hit {self._model.max_output_tokens} max_tokens after {elapsed:.1f}s). "
                 f"Try reducing --pages-per-chunk (currently {chunk.page_count})."
             )
 
-        return markdown, inp, out, c_create, c_read
+        return resp
 
     def _send_to_claude(
         self,
         pdf_b64: str,
         user_prompt: str,
-    ) -> tuple[str, int, int, int, int, str]:
+    ) -> ApiResponse:
         """Send a base64-encoded PDF to Claude and return the response.
 
         Uses streaming to avoid the 10-minute timeout limit imposed by the
@@ -642,8 +659,8 @@ class PdfConverter:
         input).
 
         Returns:
-            Tuple of (markdown_text, input_tokens, output_tokens,
-            cache_creation_tokens, cache_read_tokens, stop_reason).
+            :class:`ApiResponse` with markdown text, token counts, and
+            stop reason.
         """
         # Build system prompt (with optional cache_control).
         sys_text = (
@@ -695,11 +712,11 @@ class PdfConverter:
         cache_creation = getattr(message.usage, "cache_creation_input_tokens", 0) or 0
         cache_read = getattr(message.usage, "cache_read_input_tokens", 0) or 0
 
-        return (
-            markdown,
-            message.usage.input_tokens,
-            message.usage.output_tokens,
-            cache_creation,
-            cache_read,
-            message.stop_reason,
+        return ApiResponse(
+            markdown=markdown,
+            input_tokens=message.usage.input_tokens,
+            output_tokens=message.usage.output_tokens,
+            cache_creation_tokens=cache_creation,
+            cache_read_tokens=cache_read,
+            stop_reason=message.stop_reason,
         )
