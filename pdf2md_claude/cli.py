@@ -19,6 +19,7 @@ from pathlib import Path
 
 import colorlog
 
+from pdf2md_claude import __version__
 from pdf2md_claude.client import create_client
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter, needs_conversion
 from pdf2md_claude.images import ImageMode
@@ -228,6 +229,11 @@ Examples:
         action="store_true",
         help="Print the system prompt to stdout and exit.",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
 
     # Show help if no arguments provided
     if len(sys.argv) == 1:
@@ -301,6 +307,7 @@ Examples:
     remerge = args.remerge
 
     try:
+        _log.info("pdf2md-claude %s", __version__)
         _log.info("Found %d PDF(s) to process", len(pdf_paths))
         if remerge:
             _log.info("Mode: --remerge (re-merge from cached chunks, no API calls)")
