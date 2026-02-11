@@ -24,7 +24,13 @@ from pdf2md_claude.client import create_client
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter, needs_conversion
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, DocumentUsageStats, format_summary
-from pdf2md_claude.pipeline import ConversionPipeline
+from pdf2md_claude.pipeline import (
+    ConversionPipeline,
+    ExtractImagesStep,
+    MergeContinuedTablesStep,
+    ProcessingStep,
+    ValidateStep,
+)
 from pdf2md_claude.prompt import SYSTEM_PROMPT
 from pdf2md_claude.rules import (
     AUTO_RULES_FILENAME,
@@ -334,13 +340,16 @@ Examples:
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create the pipeline once (shared image settings for all PDFs).
-        image_mode = ImageMode(args.image_mode)
-        pipeline = ConversionPipeline(
-            extract_images=not args.no_images,
-            image_mode=image_mode,
-            image_dpi=args.image_dpi,
-        )
+        # Build the processing step chain from CLI args.
+        steps: list[ProcessingStep] = [MergeContinuedTablesStep()]
+        if not args.no_images:
+            steps.append(ExtractImagesStep(
+                image_mode=ImageMode(args.image_mode),
+                render_dpi=args.image_dpi,
+            ))
+        steps.append(ValidateStep())
+
+        pipeline = ConversionPipeline(steps)
 
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []
