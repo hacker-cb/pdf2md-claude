@@ -219,10 +219,6 @@ _DEFAULT_REGISTRY: tuple[tuple[str, str], ...] = (
     ("images",       _RULE_IMAGES),         # 8. content: images (diagrams/figures/charts)
 )
 
-# Backward-compatible unnamed rule list, derived from the registry.
-_RULES: list[str] = [text for _, text in _DEFAULT_REGISTRY]
-
-
 def build_system_prompt(
     rules: list[str],
     preamble_body: str = _PREAMBLE_BODY,
@@ -246,7 +242,7 @@ def build_system_prompt(
     )
 
 
-SYSTEM_PROMPT = build_system_prompt(_RULES)
+SYSTEM_PROMPT = build_system_prompt([text for _, text in _DEFAULT_REGISTRY])
 
 
 # ---------------------------------------------------------------------------

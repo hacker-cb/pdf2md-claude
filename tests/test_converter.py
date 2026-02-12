@@ -12,7 +12,6 @@ from pdf2md_claude.prompt import (
     CONVERT_CHUNK_PROMPT,
     SYSTEM_PROMPT,
     _DEFAULT_REGISTRY,
-    _RULES,
     build_system_prompt,
 )
 from pdf2md_claude.validator import (
@@ -297,12 +296,7 @@ class TestSystemPrompt:
 
     def test_rule_count(self):
         """SYSTEM_PROMPT should contain exactly 8 numbered rules."""
-        assert len(_RULES) == 8
         assert len(_DEFAULT_REGISTRY) == 8
-
-    def test_registry_derives_rules(self):
-        """_RULES should be derived from _DEFAULT_REGISTRY."""
-        assert _RULES == [text for _, text in _DEFAULT_REGISTRY]
 
     def test_rule_names_unique(self):
         """All rule names in the registry should be unique."""
@@ -310,19 +304,20 @@ class TestSystemPrompt:
         assert len(names) == len(set(names))
 
     def test_build_system_prompt_matches_constant(self):
-        """build_system_prompt(_RULES) should produce the same SYSTEM_PROMPT."""
-        assert build_system_prompt(_RULES) == SYSTEM_PROMPT
+        """build_system_prompt with registry rules should produce the same SYSTEM_PROMPT."""
+        rules = [text for _, text in _DEFAULT_REGISTRY]
+        assert build_system_prompt(rules) == SYSTEM_PROMPT
 
     def test_all_rules_numbered(self):
         """Each rule should appear with its 1-based number prefix."""
-        for i in range(1, len(_RULES) + 1):
+        for i in range(1, len(_DEFAULT_REGISTRY) + 1):
             assert f"\n{i}. **" in SYSTEM_PROMPT or SYSTEM_PROMPT.startswith(f"{i}. **") or f"\n\n{i}. **" in SYSTEM_PROMPT
 
     def test_numbering_sequence(self):
         """Rules should be numbered 1 through N in order."""
         import re
         numbers = re.findall(r"(?:^|\n)(\d+)\. \*\*", SYSTEM_PROMPT)
-        assert numbers == [str(i) for i in range(1, len(_RULES) + 1)]
+        assert numbers == [str(i) for i in range(1, len(_DEFAULT_REGISTRY) + 1)]
 
     def test_marker_examples_present(self):
         """Page marker examples should be interpolated (not raw placeholders)."""
