@@ -283,6 +283,18 @@ class ConversionPipeline:
 
     # -- public API --------------------------------------------------------
 
+    def load_cached_stats(self) -> DocumentUsageStats | None:
+        """Load previously saved usage stats from the work directory.
+
+        Returns:
+            ``DocumentUsageStats`` if ``stats.json`` exists and is valid,
+            ``None`` otherwise.
+        """
+        work_dir = WorkDir(self._work_dir_path)
+        if not work_dir.path.exists():
+            return None
+        return work_dir.load_stats()
+
     def needs_conversion(
         self,
         force: bool = False,

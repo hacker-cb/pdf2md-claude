@@ -501,7 +501,12 @@ def main() -> int:
             if not remerge and not pipeline.needs_conversion(
                 force=args.force, model_id=model.model_id,
             ):
-                _log.info("⊙ %s (cached)", doc_name)
+                cached_stats = pipeline.load_cached_stats()
+                if cached_stats is not None:
+                    all_stats.append(cached_stats)
+                    _log.info("⊙ %s (cached, $%.2f)", doc_name, cached_stats.cost)
+                else:
+                    _log.info("⊙ %s (cached)", doc_name)
                 cached += 1
                 continue
 
