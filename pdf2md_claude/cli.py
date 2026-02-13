@@ -27,6 +27,7 @@ from pdf2md_claude.client import create_client
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
+from pdf2md_claude.formatter import FormatMarkdownStep
 from pdf2md_claude.pipeline import (
     ConversionPipeline,
     ExtractImagesStep,
@@ -153,6 +154,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Remove AI-generated image description blocks from the output. "
              "These are textual descriptions Claude generates for images, "
              "wrapped in IMAGE_AI_GENERATED_DESCRIPTION markers.",
+    )
+    image_parent.add_argument(
+        "--no-format",
+        action="store_true",
+        help="Skip markdown formatting. By default, HTML tables are "
+             "prettified with consistent indentation and markdown spacing "
+             "is normalized (blank lines, trailing whitespace).",
     )
 
     # -- Main parser -----------------------------------------------------------
@@ -403,6 +411,8 @@ def _build_steps(args: argparse.Namespace) -> list[ProcessingStep]:
         ))
     if args.strip_ai_descriptions:
         steps.append(StripAIDescriptionsStep())
+    if not args.no_format:
+        steps.append(FormatMarkdownStep())
     steps.append(ValidateStep())
     return steps
 

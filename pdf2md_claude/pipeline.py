@@ -14,6 +14,7 @@ Built-in steps:
 - :class:`MergeContinuedTablesStep` — merges split tables.
 - :class:`ExtractImagesStep` — renders and injects images.
 - :class:`StripAIDescriptionsStep` — removes AI-generated image descriptions.
+- :class:`FormatMarkdownStep` — prettifies HTML tables and normalizes spacing.
 - :class:`ValidateStep` — runs quality checks.
 
 Also provides :meth:`ConversionPipeline.remerge` for re-running merge +
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from pdf2md_claude.converter import ConversionResult, PdfConverter
+from pdf2md_claude.formatter import FormatMarkdownStep
 from pdf2md_claude.images import ImageExtractor, ImageMode
 from pdf2md_claude.markers import IMAGE_AI_DESCRIPTION_BLOCK_RE
 from pdf2md_claude.merger import merge_chunks, merge_continued_tables
