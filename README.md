@@ -53,7 +53,6 @@ By default, Markdown files are written next to the source PDF:
 | Input | Output |
 |---|---|
 | `docs/document.pdf` | `docs/document.md` |
-| `docs/document.pdf --max-pages 5` | `docs/document_first5.md` |
 
 With `-o DIR`, all output goes to the specified directory.
 

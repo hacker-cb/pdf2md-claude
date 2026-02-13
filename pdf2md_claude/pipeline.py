@@ -49,17 +49,14 @@ _IMAGE_DIR_SUFFIX = ".images"
 # ---------------------------------------------------------------------------
 
 
-def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path:
+def resolve_output(pdf_path: Path, output_dir: Path | None) -> Path:
     """Resolve output file path for a given PDF.
-
-    *suffix* is inserted between the stem and ``.md`` extension
-    (e.g. ``"_first10"`` when ``--max-pages`` is used, or ``""``).
 
     Default: Markdown file is placed next to the source PDF.
     With *output_dir*: all output goes to the specified directory.
     """
     base = output_dir if output_dir else pdf_path.parent
-    return base / f"{pdf_path.stem}{suffix}.md"
+    return base / f"{pdf_path.stem}.md"
 
 
 # ---------------------------------------------------------------------------

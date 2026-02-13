@@ -601,11 +601,10 @@ def main() -> int:
         failure = 0
         cached = 0
         rules_cache: dict[Path, str] = {}
-        suffix = f"_first{args.max_pages}" if args.max_pages else ""
 
         for pdf_path in pdf_paths:
             doc_name = pdf_path.stem
-            output_file = resolve_output(pdf_path, suffix, output_dir)
+            output_file = resolve_output(pdf_path, output_dir)
             pipeline = ConversionPipeline(steps, pdf_path, output_file)
 
             if not remerge and not pipeline.needs_conversion(
