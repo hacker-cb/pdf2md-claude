@@ -312,8 +312,8 @@ class TestStatsIO:
 class TestInvalidate:
     """Tests for WorkDir.invalidate()."""
 
-    def test_clears_chunks_and_stats(self, tmp_path: Path):
-        """invalidate removes chunk files and stats.json."""
+    def test_clears_everything(self, tmp_path: Path):
+        """invalidate removes chunks, stats, and manifest."""
         pdf = _make_pdf(tmp_path)
         wd = WorkDir(tmp_path / "out.chunks")
         wd.create_or_validate(**_default_params(pdf))
@@ -330,6 +330,7 @@ class TestInvalidate:
         assert not wd.has_chunk(0)
         assert not wd.has_chunk(1)
         assert wd.load_stats() is None
+        assert not (tmp_path / "out.chunks" / "manifest.json").exists()
 
     def test_keeps_directory(self, tmp_path: Path):
         """invalidate keeps the .chunks directory itself."""
@@ -343,8 +344,8 @@ class TestInvalidate:
         assert wd.path.exists()
         assert wd.path.is_dir()
 
-    def test_keeps_manifest(self, tmp_path: Path):
-        """invalidate preserves manifest.json."""
+    def test_clears_manifest(self, tmp_path: Path):
+        """invalidate removes manifest.json."""
         pdf = _make_pdf(tmp_path)
         wd = WorkDir(tmp_path / "out.chunks")
         wd.create_or_validate(**_default_params(pdf))
@@ -352,7 +353,20 @@ class TestInvalidate:
 
         wd.invalidate()
 
-        assert (tmp_path / "out.chunks" / "manifest.json").exists()
+        assert not (tmp_path / "out.chunks" / "manifest.json").exists()
+        assert wd.load_manifest() is None
+
+    def test_resets_cached_manifest(self, tmp_path: Path):
+        """invalidate clears the in-memory manifest cache."""
+        pdf = _make_pdf(tmp_path)
+        wd = WorkDir(tmp_path / "out.chunks")
+        wd.create_or_validate(**_default_params(pdf))
+
+        wd.invalidate()
+
+        # After invalidate, chunk_count() should fail (no manifest).
+        with pytest.raises(RuntimeError, match="manifest not loaded"):
+            wd.chunk_count()
 
     def test_safe_when_directory_missing(self, tmp_path: Path):
         """invalidate does not raise when .chunks/ dir does not exist."""
