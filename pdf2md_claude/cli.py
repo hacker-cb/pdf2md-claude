@@ -672,6 +672,10 @@ def _convert_one_document(
 
         _log.info("Converting %s...", doc_name)
 
+        effective_ppc = pipeline.resolve_pages_per_chunk(
+            pages_per_chunk, force=force,
+        )
+
         converter = PdfConverter(
             client, model,
             use_cache=use_cache,
@@ -680,7 +684,7 @@ def _convert_one_document(
         )
         result = pipeline.convert(
             converter,
-            pages_per_chunk=pages_per_chunk,
+            pages_per_chunk=effective_ppc,
             max_pages=max_pages,
             force=force,
         )
@@ -968,13 +972,17 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 
                 _log.info("%s:", doc_name)
 
+                effective_ppc = pipeline.resolve_pages_per_chunk(
+                    pages_per_chunk, force=args.force,
+                )
+
                 try:
                     stats = _convert_single_pdf(
                         pdf_path,
                         model=model,
                         client=client,
                         pipeline=pipeline,
-                        pages_per_chunk=pages_per_chunk,
+                        pages_per_chunk=effective_ppc,
                         max_pages=args.max_pages,
                         force=args.force,
                         use_cache=args.cache,

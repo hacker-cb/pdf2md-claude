@@ -330,6 +330,20 @@ class WorkDir:
             if f.name.startswith("chunk_") or f.name == self._STATS_FILE:
                 f.unlink()
 
+    def load_manifest(self) -> Manifest | None:
+        """Read the manifest from disk if it exists.
+
+        Returns ``None`` if the manifest file is missing or corrupt.
+        Unlike :meth:`_load_manifest`, this method never raises.
+        """
+        path = self._path / self._MANIFEST_FILE
+        if not path.exists():
+            return None
+        try:
+            return self._read_manifest(path)
+        except RuntimeError:
+            return None
+
     def _load_manifest(self) -> Manifest:
         """Lazy-load the manifest from disk.
 

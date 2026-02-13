@@ -23,7 +23,6 @@ steps + write from cached chunks without any API calls.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -282,6 +281,43 @@ class ConversionPipeline:
 
     # -- public API --------------------------------------------------------
 
+    def resolve_pages_per_chunk(
+        self,
+        requested: int,
+        force: bool = False,
+    ) -> int:
+        """Resolve effective ``pages_per_chunk`` from an existing workdir manifest.
+
+        If a manifest exists (and *force* is ``False``), always uses its
+        ``pages_per_chunk`` so that cached chunks remain valid.  Logs a
+        warning when the requested value differs from the manifest.
+
+        When no manifest exists (new job) or *force* is ``True``,
+        returns *requested* unchanged.
+
+        Args:
+            requested: The ``pages_per_chunk`` value from CLI args
+                (explicit or default).
+            force: When ``True``, skip manifest lookup and use
+                *requested* as-is (the user wants a fresh start).
+
+        Returns:
+            Effective ``pages_per_chunk`` to use for conversion.
+        """
+        if force:
+            return requested
+        work_dir = WorkDir(self._work_dir_path)
+        manifest = work_dir.load_manifest()
+        if manifest is None:
+            return requested
+        if manifest.pages_per_chunk != requested:
+            _log.warning(
+                "  Using pages_per_chunk=%d from existing workdir "
+                "(requested: %d). Use --force to override.",
+                manifest.pages_per_chunk, requested,
+            )
+        return manifest.pages_per_chunk
+
     def load_cached_stats(self) -> DocumentUsageStats | None:
         """Load previously saved usage stats from the work directory.
 
@@ -311,14 +347,12 @@ class ConversionPipeline:
             return True
         # Output exists -- check manifest for model staleness.
         if model_id is not None:
-            manifest_path = self._work_dir_path / "manifest.json"
-            if manifest_path.exists():
-                try:
-                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    if data.get("model_id") != model_id:
-                        return True
-                except (json.JSONDecodeError, KeyError):
-                    return True
+            work_dir = WorkDir(self._work_dir_path)
+            manifest = work_dir.load_manifest()
+            if manifest is not None and manifest.model_id != model_id:
+                return True
+            # Missing/corrupt manifest: output file exists, no reason
+            # to force reconversion (user may have deleted .chunks/).
         return False
 
     def convert(
