@@ -135,10 +135,30 @@ at the same time (e.g. `<th rowspan="2" colspan="3">`).
       - The total column count MUST be identical for every row. A cell with \
 `colspan="3"` counts as 3; a cell with `rowspan="N"` in row R occupies \
 that column in rows R through R+N-1.
-      - **Self-check**: compute the total column count from the full table \
-(any row may use colspan/rowspan). Verify that EVERY row — header, data, \
-and separator — resolves to the same total. Fix mismatches before \
-outputting.
+   - **rowspan boundary rule** (CRITICAL): A `rowspan` value must NEVER \
+exceed the number of remaining rows within its section (`<thead>` or \
+`<tbody>`). If `<thead>` has 2 `<tr>` rows, the maximum rowspan for a \
+cell in row 1 is 2, not 3. Rowspan must NOT bleed from `<thead>` into \
+`<tbody>` or vice versa. Before writing any `rowspan`, count the actual \
+rows in the section and cap accordingly.
+   - **Multi-level headers and colspan** (CRITICAL): When a header cell \
+visually groups multiple sub-columns beneath it, it MUST have `colspan` \
+equal to the number of sub-columns. Common mistake: using only `rowspan` \
+when the cell also spans multiple columns — the correct markup needs \
+`colspan` too (e.g. `<th rowspan="2" colspan="3">`). Count the \
+sub-header `<th>` cells in the next row and verify they fill the \
+colspan exactly.
+   - **Self-check procedure** (CRITICAL — perform this for EVERY table):
+      1. Determine the table's column count W from the first header row \
+(sum of explicit cells, each weighted by its colspan).
+      2. For each subsequent row, compute: (number of explicit cells, each \
+weighted by colspan) + (cells inherited from rowspan of earlier rows) = \
+must equal W.
+      3. If ANY row ≠ W, find and fix the mismatch BEFORE outputting. \
+Common fixes: add missing `colspan`, reduce over-sized `rowspan`, add \
+or remove a `<td>`/`<th>`.
+      4. Double-check that rowspan values do not cross the `<thead>`/\
+`<tbody>` boundary.
    - **Completeness** (CRITICAL): You MUST convert EVERY table completely, \
 no matter how large or complex. NEVER replace a table with a summary, \
 description, or "see below" reference. If a table has 100 rows, output all \
