@@ -166,26 +166,30 @@ marker with normalized coordinates (0.0–1.0, origin at top-left, \
 x grows right, y grows down): \
 `{IMAGE_RECT.prompt_template}`. Example: `{IMAGE_RECT.example}`.
    - **Bounding box precision** (CRITICAL — read carefully): \
-Each edge must align with the outermost **drawn graphical primitive** \
-of the figure (lines, shapes, axes, arrows, data points). \
-Axis tick labels and data labels that are visually part of the graphic \
-are included. Post-processing adds a small padding margin, so aim for \
-the tightest box that still contains all graphical content — \
-err on the side of slightly tight rather than loose.
-     - **Top edge**: the topmost drawn element (e.g., top of a box, \
-highest axis tick, tallest bar). Do NOT extend upward into headings, \
-body text, page headers, or page numbers above the figure.
-     - **Bottom edge**: the bottommost drawn element (e.g., X-axis line, \
-lowest label of the graphic). Do NOT extend downward into the figure \
-caption or body text below.
-     - **Left / right edges**: the outermost drawn elements on each side.
-   - **Bounding box exclusions**: The box must NEVER include any of \
-the following — these are NOT part of the graphical content: \
-page numbers or running headers/footers; \
-figure captions in any language \
-(e.g., "Figure 3 – Dimming curve", "图 3. 调光曲线", "Рис. 3 — Кривая"); \
-figure number labels; section headings; \
-body text paragraphs above or below the figure.
+Define the box by locating the **text boundaries** around the figure, \
+NOT by trying to find the figure's visual edges. Use the body text \
+you are transcribing as reference landmarks — you know exactly where \
+each text line sits on the page because you are reading it.
+     - **Top edge (y1)**: find the last line of body text or heading \
+you transcribed ABOVE this figure. Place y1 just below that text \
+line's baseline. Everything between that text and the caption below \
+is figure content and must be inside the box.
+     - **Bottom edge (y2)**: find the figure caption \
+(e.g., "Figure N – ...", "图 N ...", "Рис. N — ...") or the first \
+line of body text below the figure. Place y2 just above that line. \
+The caption is transcribed separately (as bold text in the image \
+block) and must NOT be inside the box.
+     - **Left / right edges**: use the outermost drawn elements or, \
+if unclear, the page text margins.
+     - **Why text-based landmarks**: Figures may contain a mix of \
+raster images and vector graphics (boxes, lines, arrows) that are \
+hard to visually bound. But the text gap on the page reliably \
+contains the complete figure — all sub-parts, whether raster or \
+vector-drawn, sit in the space between the surrounding paragraphs.
+     - **Self-check**: every element mentioned in your AI description \
+of the figure must be geometrically inside the IMAGE_RECT. If your \
+description mentions elements that would fall outside your y1–y2 \
+range, widen the box.
    - **Caption**: Preserve the original caption exactly as it appears in \
 the PDF (e.g., "Figure 5 – Timing diagram") as a `**bold**` line inside \
 the image block.
