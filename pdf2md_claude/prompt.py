@@ -73,10 +73,8 @@ will be specified in the conversion instructions.
 
 # Rule — Skip elements
 _RULE_SKIP = f"""\
-**Skip**: Page headers, page footers, page numbers, watermarks, and \
-copyright/license lines. Do NOT include the Table of Contents \
-(it references printable page numbers which are meaningless in markdown).
-   - **CRITICAL**: When you skip a page's content, you MUST still emit \
+**Skip**: Page headers, page footers, page numbers, and watermarks.
+   - **CRITICAL**: When you skip entire page's content, you MUST still emit \
 the page markers for that page. Place `{PAGE_SKIP.marker}` between the begin/end \
 markers to signal the skip is intentional:
    ```
@@ -94,10 +92,10 @@ _RULE_HEADINGS = """\
 **Headings**: Preserve the document's section numbering and hierarchy. \
 Count the dot-separated numbers to determine Markdown heading depth:
    - `#` — document title
-   - `##` — top-level sections (e.g. "11 Definition of commands")
-   - `###` — subsections (e.g. "11.2 Overview sheets")
-   - `####` — sub-subsections (e.g. "11.2.1 General")
-   - `#####` — deeper levels (e.g. "9.2.2.2 Standby")"""
+   - `##` — top-level sections (e.g. "1 Introduction")
+   - `###` — subsections (e.g. "1.2 Scope")
+   - `####` — sub-subsections (e.g. "1.2.1 General")
+   - `#####` — deeper levels (e.g. "1.2.1.1 Details")"""
 
 # Rule — Inline formatting (applies to ALL output)
 _RULE_FORMATTING = """\
@@ -220,7 +218,7 @@ content on the page.
 _DEFAULT_REGISTRY: tuple[tuple[str, str], ...] = (
     ("fidelity",     _RULE_FIDELITY),       # 1. mindset: don't summarize/fabricate
     ("page_markers", _RULE_PAGE_MARKERS),   # 2. infra: page boundary markers
-    ("skip",         _RULE_SKIP),           # 3. exclusions: headers/footers/TOC
+    ("skip",         _RULE_SKIP),           # 3. exclusions: headers/footers/watermarks
     ("headings",     _RULE_HEADINGS),       # 4. structure: section hierarchy
     ("formatting",   _RULE_FORMATTING),     # 5. style: sup/sub, dashes, italics
     ("formulas",     _RULE_FORMULAS),       # 6. content: math notation
