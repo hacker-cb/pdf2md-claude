@@ -35,6 +35,7 @@ from pdf2md_claude.pipeline import (
     resolve_output,
 )
 from pdf2md_claude.prompt import SYSTEM_PROMPT
+from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
 from pdf2md_claude.rules import (
     AUTO_RULES_FILENAME,
     build_custom_system_prompt,
@@ -107,6 +108,8 @@ Examples:
   %(prog)s doc.pdf --cache                       Enable prompt caching (1h TTL)
   %(prog)s doc.pdf -f                            Force reconvert
   %(prog)s doc.pdf --remerge                     Re-merge from cached chunks (no API)
+  %(prog)s --validate output/*.md                Validate existing .md files (no API)
+  %(prog)s --validate -v samples/*.md            Validate with verbose output
   %(prog)s --init-rules                          Generate .pdf2md.rules template
   %(prog)s --init-rules my_rules.txt             Generate template at custom path
   %(prog)s doc.pdf --rules my_rules.txt          Use custom rules
@@ -138,6 +141,14 @@ Examples:
         action="store_true",
         help="Force reconversion even if output already exists "
              "(also clears cached chunks)",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate existing .md files (no API key needed). "
+             "Positional arguments are treated as .md file paths "
+             "instead of PDFs. Runs structural checks and optional "
+             "PDF fidelity check (if a matching .pdf is found nearby).",
     )
     parser.add_argument(
         "--version",
@@ -304,6 +315,78 @@ def _resolve_rules(
     return rules_cache[resolved]
 
 
+def _discover_pdf(md_path: Path) -> Path | None:
+    """Find a matching source PDF for a markdown file.
+
+    Checks for ``<stem>.pdf`` in the same directory as the ``.md`` file.
+    Returns the PDF path if found, ``None`` otherwise.
+    """
+    candidate = md_path.with_suffix(".pdf")
+    return candidate if candidate.is_file() else None
+
+
+def _validate_files(md_paths: list[Path], verbose: bool) -> int:
+    """Run standalone validation on existing ``.md`` files.
+
+    For each file, reads the markdown content, runs structural
+    validation checks, and optionally runs PDF fidelity checks if
+    a matching ``.pdf`` is found alongside the ``.md`` file.
+
+    Args:
+        md_paths: Resolved paths to ``.md`` files.
+        verbose: Whether verbose logging is enabled.
+
+    Returns:
+        Exit code: 0 if all files pass (warnings OK), 1 if any has errors.
+    """
+    total_errors = 0
+    total_warnings = 0
+    has_errors = False
+
+    for md_path in md_paths:
+        doc_name = md_path.name
+        _log.info("%s:", doc_name)
+
+        markdown = md_path.read_text(encoding="utf-8")
+        result: ValidationResult = validate_output(markdown)
+
+        # Optional PDF fidelity check.
+        pdf_path = _discover_pdf(md_path)
+        if pdf_path is not None:
+            _log.debug("  Found source PDF: %s", pdf_path)
+            check_page_fidelity(pdf_path, markdown, result)
+        else:
+            _log.debug("  No matching PDF found for fidelity check")
+
+        result.log_all()
+
+        if not result.ok:
+            _log.warning(
+                "  ⚠ %d error(s), %d warning(s)",
+                len(result.errors), len(result.warnings),
+            )
+            has_errors = True
+        elif result.warnings:
+            _log.warning(
+                "  ⚠ %d warning(s)", len(result.warnings),
+            )
+        else:
+            _log.info("  ✓ OK")
+
+        total_errors += len(result.errors)
+        total_warnings += len(result.warnings)
+
+    _log.info("")
+    _log.info(_SUMMARY_SEP)
+    _log.info(
+        "Validated %d file(s): %d error(s), %d warning(s)",
+        len(md_paths), total_errors, total_warnings,
+    )
+    _log.info(_SUMMARY_SEP)
+
+    return 1 if has_errors else 0
+
+
 def _process_pdf(
     pdf_path: Path,
     args: argparse.Namespace,
@@ -398,6 +481,33 @@ def main() -> int:
             prompt = SYSTEM_PROMPT
         print(prompt)
         return 0
+
+    # Standalone validate mode: validate existing .md files.
+    if args.validate:
+        if not args.pdfs:
+            parser.error("--validate requires at least one .md file")
+        if args.remerge:
+            parser.error("--validate and --remerge cannot be used together")
+
+        setup_colorized_logging()
+        if args.verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
+
+        # Resolve and validate .md paths.
+        md_paths: list[Path] = []
+        for p in args.pdfs:
+            resolved = p.resolve()
+            if not resolved.exists():
+                _log.error("File not found: %s", p)
+                return 1
+            if not resolved.is_file():
+                _log.error("Not a file: %s", p)
+                return 1
+            md_paths.append(resolved)
+
+        _log.info("pdf2md-claude %s", __version__)
+        _log.info("Mode: --validate (%d file(s))", len(md_paths))
+        return _validate_files(md_paths, verbose=args.verbose)
 
     # Validate: at least one PDF required
     if not args.pdfs:
