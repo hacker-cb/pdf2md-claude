@@ -101,16 +101,15 @@ Count the dot-separated numbers to determine Markdown heading depth:
 
 # Rule — Inline formatting (applies to ALL output)
 _RULE_FORMATTING = """\
-**Inline formatting** (applies everywhere — body text AND tables):
-   - Superscripts: ALWAYS use `<sup>`, not Unicode superscript characters \
-(e.g., write `a<sup>2</sup>` not `a²`). This ensures full character \
-coverage and consistent rendering.
-   - Subscripts: ALWAYS use `<sub>`, not Unicode subscript characters \
-(e.g., write `H<sub>2</sub>O` not `H₂O`).
-   - Dashes: use an en-dash `–` for numeric ranges and list bullets; \
-use a hyphen `-` only in compound words.
-   - Italics in body text: use Markdown `*text*`. Inside HTML tables: \
-use `<em>text</em>`."""
+**Inline formatting**:
+   - **Body text** — use Markdown syntax: `*italic*`, `**bold**`, `` `code` ``.
+   - **Inside HTML tables** — use HTML tags: `<em>`, `<strong>`, `<code>`.
+   - **Superscripts / Subscripts** (everywhere, body AND tables): ALWAYS use \
+`<sup>` / `<sub>` — there is no Markdown equivalent. Do NOT use Unicode \
+superscript/subscript characters (write `a<sup>2</sup>` not `a²`, \
+`H<sub>2</sub>O` not `H₂O`).
+   - **Dashes**: use an en-dash `–` for numeric ranges and list bullets; \
+use a hyphen `-` only in compound words."""
 
 # Rule — Formulas
 _RULE_FORMULAS = """\
