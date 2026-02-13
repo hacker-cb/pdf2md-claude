@@ -89,13 +89,16 @@ markers — every page in the range must have a begin/end pair."""
 
 # Rule — Headings
 _RULE_HEADINGS = """\
-**Headings**: Preserve the document's section numbering and hierarchy. \
-Count the dot-separated numbers to determine Markdown heading depth:
-   - `#` — document title
-   - `##` — top-level sections (e.g. "1 Introduction")
-   - `###` — subsections (e.g. "1.2 Scope")
-   - `####` — sub-subsections (e.g. "1.2.1 General")
-   - `#####` — deeper levels (e.g. "1.2.1.1 Details")"""
+**Headings**:
+   - **General policy**: Preserve the document's section numbering and \
+hierarchy exactly as they appear in the source.
+   - **Depth mapping**: Count the dot-separated numbers to determine \
+Markdown heading depth:
+     - `#` — document title (exactly one per document)
+     - `##` — top-level sections (e.g. "1 Introduction")
+     - `###` — subsections (e.g. "1.2 Scope")
+     - `####` — sub-subsections (e.g. "1.2.1 General")
+     - `#####` — deeper levels (e.g. "1.2.1.1 Details")"""
 
 # Rule — Inline formatting (applies to ALL output)
 _RULE_FORMATTING = """\
