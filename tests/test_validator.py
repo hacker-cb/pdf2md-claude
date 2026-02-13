@@ -898,3 +898,155 @@ class TestPageFidelityWithAIDescriptions(TestPageFidelity):
         check_page_fidelity(text_pdf, md, result)
         fidelity_warnings = [w for w in result.warnings if "fidelity" in w.lower()]
         assert not fidelity_warnings
+
+
+# ---------------------------------------------------------------------------
+# _check_table_column_consistency
+# ---------------------------------------------------------------------------
+
+class TestTableColumnConsistency:
+    """Tests for HTML table column-count consistency validation."""
+
+    def _col_warnings(self, result: ValidationResult) -> list[str]:
+        """Extract column-count mismatch warnings."""
+        return [w for w in result.warnings if "columns" in w]
+
+    def test_valid_simple_table(self):
+        """A simple table with uniform rows should produce no warnings."""
+        md = _wrap_pages(
+            "**Table 1 – Simple**\n\n"
+            "<table>\n"
+            "<thead><tr><th>A</th><th>B</th><th>C</th></tr></thead>\n"
+            "<tbody>\n"
+            "<tr><td>1</td><td>2</td><td>3</td></tr>\n"
+            "<tr><td>4</td><td>5</td><td>6</td></tr>\n"
+            "</tbody></table>\n",
+            start=1, end=1,
+        )
+        r = validate_output(md)
+        assert not self._col_warnings(r)
+
+    def test_valid_rowspan_colspan(self):
+        """A table with correct rowspan+colspan should produce no warnings."""
+        md = _wrap_pages(
+            "**Table 2 – Complex**\n\n"
+            "<table>\n"
+            "<thead>\n"
+            '<tr><th rowspan="2">Name</th>'
+            '<th colspan="2">Group</th>'
+            '<th rowspan="2">Total</th></tr>\n'
+            "<tr><th>Sub A</th><th>Sub B</th></tr>\n"
+            "</thead>\n"
+            "<tbody>\n"
+            "<tr><td>X</td><td>1</td><td>2</td><td>3</td></tr>\n"
+            "<tr><td>Y</td><td>4</td><td>5</td><td>6</td></tr>\n"
+            "</tbody></table>\n",
+            start=1, end=1,
+        )
+        r = validate_output(md)
+        assert not self._col_warnings(r)
+
+    def test_mismatched_header_vs_data(self):
+        """Header with 3 columns but data with 4 cells should warn."""
+        md = _wrap_pages(
+            "**Table 3 – Broken**\n\n"
+            "<table>\n"
+            "<thead><tr><th>A</th><th>B</th><th>C</th></tr></thead>\n"
+            "<tbody>\n"
+            "<tr><td>1</td><td>2</td><td>3</td><td>4</td></tr>\n"
+            "</tbody></table>\n",
+            start=1, end=1,
+        )
+        r = validate_output(md)
+        warnings = self._col_warnings(r)
+        assert len(warnings) == 1
+        assert "row 0" in warnings[0]
+        assert "3 columns" in warnings[0]
+        assert "expected 4" in warnings[0]
+
+    def test_separator_row_wrong_count(self):
+        """Empty separator row with fewer cells than data rows should warn."""
+        md = _wrap_pages(
+            "**Table 4 – Separator**\n\n"
+            "<table>\n"
+            "<thead><tr><th>A</th><th>B</th><th>C</th><th>D</th></tr></thead>\n"
+            "<tbody>\n"
+            "<tr><td></td><td></td><td></td></tr>\n"
+            "<tr><td>1</td><td>2</td><td>3</td><td>4</td></tr>\n"
+            "</tbody></table>\n",
+            start=1, end=1,
+        )
+        r = validate_output(md)
+        warnings = self._col_warnings(r)
+        assert len(warnings) == 1
+        assert "row 1" in warnings[0]  # 0=header, 1=separator
+        assert "3 columns" in warnings[0]
+
+    def test_table_title_in_warning(self):
+        """Warning message should include the table title when available."""
+        md = _wrap_pages(
+            "**Table 6 – Application extended commands**\n\n"
+            "<table>\n"
+            "<thead><tr><th>A</th><th>B</th></tr></thead>\n"
+            "<tbody>\n"
+            "<tr><td>1</td><td>2</td><td>3</td></tr>\n"
+            "</tbody></table>\n",
+            start=1, end=1,
+        )
+        r = validate_output(md)
+        warnings = self._col_warnings(r)
+        assert len(warnings) == 1
+        assert "Table 6" in warnings[0]
+
+    def test_multiple_tables_only_broken_warned(self):
+        """Only the broken table should produce warnings."""
+        md = _wrap_pages(
+            "**Table 1 – Good**\n\n"
+            "<table>\n"
+            "<thead><tr><th>A</th><th>B</th></tr></thead>\n"
+            "<tbody><tr><td>1</td><td>2</td></tr></tbody>\n"
+            "</table>\n\n"
+            "**Table 2 – Bad**\n\n"
+            "<table>\n"
+            "<thead><tr><th>X</th><th>Y</th></tr></thead>\n"
+            "<tbody><tr><td>1</td><td>2</td><td>3</td></tr></tbody>\n"
+            "</table>\n",
+            start=1, end=1,
+        )
+        r = validate_output(md)
+        warnings = self._col_warnings(r)
+        assert len(warnings) == 1
+        assert "Table 2" in warnings[0]
+
+    def test_rowspan_and_colspan_combined(self):
+        """A cell with both rowspan and colspan should be handled correctly."""
+        md = _wrap_pages(
+            "**Table 5 – Combined**\n\n"
+            "<table>\n"
+            "<thead>\n"
+            '<tr><th rowspan="2" colspan="2">Wide+Tall</th>'
+            '<th colspan="2">Group</th></tr>\n'
+            "<tr><th>C</th><th>D</th></tr>\n"
+            "</thead>\n"
+            "<tbody>\n"
+            "<tr><td>a</td><td>b</td><td>c</td><td>d</td></tr>\n"
+            "<tr><td>e</td><td>f</td><td>g</td><td>h</td></tr>\n"
+            "</tbody></table>\n",
+            start=1, end=1,
+        )
+        r = validate_output(md)
+        assert not self._col_warnings(r)
+
+    def test_no_table_title_uses_fallback(self):
+        """When no title is found, warning should say 'HTML table'."""
+        md = _wrap_pages(
+            "<table>\n"
+            "<thead><tr><th>A</th><th>B</th></tr></thead>\n"
+            "<tbody><tr><td>1</td><td>2</td><td>3</td></tr></tbody>\n"
+            "</table>\n",
+            start=1, end=1,
+        )
+        r = validate_output(md)
+        warnings = self._col_warnings(r)
+        assert len(warnings) == 1
+        assert "HTML table" in warnings[0]
