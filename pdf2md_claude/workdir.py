@@ -330,10 +330,8 @@ class WorkDir:
             if f.name.startswith("chunk_") or f.name == self._STATS_FILE:
                 f.unlink()
 
-    def chunk_count(self) -> int:
-        """Return the expected number of chunks from the manifest.
-
-        Lazy-loads the manifest from disk if it has not been loaded yet.
+    def _load_manifest(self) -> Manifest:
+        """Lazy-load the manifest from disk.
 
         Raises:
             RuntimeError: If the manifest file does not exist on disk.
@@ -346,4 +344,24 @@ class WorkDir:
                 raise RuntimeError(
                     "WorkDir manifest not loaded; call create_or_validate() first"
                 )
-        return self._manifest.num_chunks
+        return self._manifest
+
+    def chunk_count(self) -> int:
+        """Return the expected number of chunks from the manifest.
+
+        Lazy-loads the manifest from disk if it has not been loaded yet.
+
+        Raises:
+            RuntimeError: If the manifest file does not exist on disk.
+        """
+        return self._load_manifest().num_chunks
+
+    def total_pages(self) -> int:
+        """Return the total page count from the manifest.
+
+        Lazy-loads the manifest from disk if it has not been loaded yet.
+
+        Raises:
+            RuntimeError: If the manifest file does not exist on disk.
+        """
+        return self._load_manifest().total_pages

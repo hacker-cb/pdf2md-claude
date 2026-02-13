@@ -76,6 +76,7 @@ def merge_chunks(markdown_parts: list[str]) -> str:
 
     # Collect all pages across all chunks (first-writer-wins).
     all_pages: dict[int, str] = {}
+    chunk_summaries: list[tuple[int, int, int]] = []
     for i, part in enumerate(markdown_parts):
         chunk_pages = _extract_pages(part)
         new_pages = 0
@@ -83,21 +84,20 @@ def merge_chunks(markdown_parts: list[str]) -> str:
             if page_num not in all_pages:
                 all_pages[page_num] = content
                 new_pages += 1
-        _log.info(
-            "    Chunk %d: %d pages (%d new)",
-            i + 1, len(chunk_pages), new_pages,
-        )
+        chunk_summaries.append((i, len(chunk_pages), new_pages))
 
     if not all_pages:
         _log.warning("    No page markers found — falling back to simple join")
         return "\n\n".join(part.strip() for part in markdown_parts if part.strip())
 
-    # Concatenate pages in order.
+    # Log total first, then per-chunk details.
     sorted_pages = sorted(all_pages.keys())
     _log.info(
         "    Total: %d unique pages (%d-%d)",
         len(sorted_pages), sorted_pages[0], sorted_pages[-1],
     )
+    for i, total, new in chunk_summaries:
+        _log.info("    Chunk %d: %d pages (%d new)", i + 1, total, new)
 
     merged = "\n\n".join(all_pages[p] for p in sorted_pages)
     return merged

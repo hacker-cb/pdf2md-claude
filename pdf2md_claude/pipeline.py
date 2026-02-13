@@ -394,9 +394,13 @@ class ConversionPipeline:
                 f"Run a full conversion first before using --remerge."
             )
 
-        # 1. Discover chunk count from manifest.
+        # 1. Discover chunk count and total pages from manifest.
         num_chunks = work_dir.chunk_count()
-        _log.info("  Re-merging from %d cached chunks...", num_chunks)
+        total_pages = work_dir.total_pages()
+        _log.info(
+            "  Re-merging from %d cached chunks (%d pages)...",
+            num_chunks, total_pages,
+        )
 
         # 2. Verify all chunks exist and load markdown.
         missing = [i for i in range(num_chunks) if not work_dir.has_chunk(i)]
