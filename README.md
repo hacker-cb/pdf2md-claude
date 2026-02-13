@@ -11,7 +11,7 @@ merging, and output validation. Preserves tables, formulas, figures, and documen
 
 ## Installation
 
-Requires Python 3.11+.
+Requires Python 3.12+.
 
 ```bash
 pip install pdf2md-claude
@@ -41,6 +41,9 @@ pdf2md-claude convert docs/*.pdf
 
 # Custom output directory
 pdf2md-claude convert *.pdf -o output/
+
+# Convert multiple PDFs in parallel (4 at a time)
+pdf2md-claude convert *.pdf -j 4
 
 # Also works via python -m
 python -m pdf2md_claude convert document.pdf
@@ -83,6 +86,7 @@ pdf2md-claude init-rules [PATH]             Generate a rules template
 
 ```
   -o, --output-dir DIR   Output directory (default: same directory as each PDF)
+  -j, --jobs N           Process N documents in parallel (default: 1)
   -v, --verbose          Enable verbose logging
   -f, --force            Force reconversion even if output exists
   --model MODEL          Claude model to use (default: opus)
