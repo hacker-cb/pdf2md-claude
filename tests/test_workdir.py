@@ -226,9 +226,9 @@ class TestChunkIO:
         wd.create_or_validate(**_default_params(pdf))
 
         wd.save_chunk(0, "md", "ctx", _make_usage(0))
-        assert (tmp_path / "out.staging" / "pass1" / "chunk_01.md").exists()
-        assert (tmp_path / "out.staging" / "pass1" / "chunk_01_context.md").exists()
-        assert (tmp_path / "out.staging" / "pass1" / "chunk_01_meta.json").exists()
+        assert (tmp_path / "out.staging" / "chunks" / "chunk_01.md").exists()
+        assert (tmp_path / "out.staging" / "chunks" / "chunk_01_context.md").exists()
+        assert (tmp_path / "out.staging" / "chunks" / "chunk_01_meta.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +495,7 @@ class TestOutputIO:
     """Tests for phase output save/load operations."""
 
     def test_save_load_output_roundtrip(self, tmp_path: Path):
-        """Saved output.md should survive save/load."""
+        """Saved merged.md should survive save/load."""
         pdf = _make_pdf(tmp_path)
         wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
@@ -507,7 +507,7 @@ class TestOutputIO:
         assert loaded == markdown
 
     def test_load_output_missing_returns_none(self, tmp_path: Path):
-        """load_output returns None when output.md does not exist."""
+        """load_output returns None when merged.md does not exist."""
         pdf = _make_pdf(tmp_path)
         wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))

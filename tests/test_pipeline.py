@@ -305,7 +305,7 @@ class TestProcess:
         step = RecordingStep(label="transform", suffix="\n## Added by step")
         
         # Pipeline derives staging dir from output_file -> result.staging
-        (tmp_path / "result.staging" / "pass1").mkdir(parents=True)
+        (tmp_path / "result.staging" / "chunks").mkdir(parents=True)
         pipeline = _make_pipeline(steps=[step], output_file=output_file)
 
         ctx, step_timings = pipeline._process(
@@ -553,7 +553,7 @@ class TestRunFromStepValidation:
         from unittest.mock import Mock
 
         output_file = tmp_path / "doc.md"
-        (tmp_path / "doc.staging" / "pass1").mkdir(parents=True)
+        (tmp_path / "doc.staging" / "chunks").mkdir(parents=True)
 
         mock_converter = Mock()
         mock_converter.convert.return_value = Mock(

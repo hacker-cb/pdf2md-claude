@@ -80,8 +80,8 @@ class WorkDir:
 
     _MANIFEST_FILE = "manifest.json"
     _STATS_FILE = "stats.json"
-    _PASS1_SUBDIR = "pass1"
-    _OUTPUT_FILE = "output.md"
+    _CHUNKS_SUBDIR = "chunks"
+    _MERGED_FILE = "merged.md"
 
     def __init__(self, path: Path) -> None:
         """Wrap a ``.staging/`` directory path.
@@ -93,7 +93,7 @@ class WorkDir:
             path: Path to the ``.staging/`` directory.
         """
         self._path = path
-        self._pass1_path = path / self._PASS1_SUBDIR
+        self._chunks_path = path / self._CHUNKS_SUBDIR
         self._manifest: Manifest | None = None
 
     @property
@@ -104,13 +104,13 @@ class WorkDir:
     # -- Naming helpers (1-indexed, zero-padded) ----------------------------
 
     def _chunk_md(self, index: int) -> Path:
-        return self._pass1_path / f"chunk_{index + 1:02d}.md"
+        return self._chunks_path / f"chunk_{index + 1:02d}.md"
 
     def _chunk_context(self, index: int) -> Path:
-        return self._pass1_path / f"chunk_{index + 1:02d}_context.md"
+        return self._chunks_path / f"chunk_{index + 1:02d}_context.md"
 
     def _chunk_meta(self, index: int) -> Path:
-        return self._pass1_path / f"chunk_{index + 1:02d}_meta.json"
+        return self._chunks_path / f"chunk_{index + 1:02d}_meta.json"
 
     # -- Manifest -----------------------------------------------------------
 
@@ -154,7 +154,7 @@ class WorkDir:
         )
 
         self._path.mkdir(parents=True, exist_ok=True)
-        self._pass1_path.mkdir(exist_ok=True)
+        self._chunks_path.mkdir(exist_ok=True)
         manifest_file = self._path / self._MANIFEST_FILE
 
         if manifest_file.exists():
@@ -297,7 +297,7 @@ class WorkDir:
         Args:
             stats: Aggregated usage stats for the full document.
         """
-        path = self._pass1_path / self._STATS_FILE
+        path = self._chunks_path / self._STATS_FILE
         path.write_text(
             json.dumps(asdict(stats), indent=2) + "\n",
             encoding="utf-8",
@@ -310,7 +310,7 @@ class WorkDir:
             ``DocumentUsageStats`` instance, or ``None`` if the file
             does not exist or is corrupt (returns ``None`` on error).
         """
-        path = self._pass1_path / self._STATS_FILE
+        path = self._chunks_path / self._STATS_FILE
         if not path.exists():
             return None
         try:
@@ -333,7 +333,7 @@ class WorkDir:
             return
         shutil.rmtree(self._path)
         self._path.mkdir(parents=True, exist_ok=True)
-        self._pass1_path.mkdir(exist_ok=True)
+        self._chunks_path.mkdir(exist_ok=True)
         self._manifest = None
 
     def load_manifest(self) -> Manifest | None:
@@ -389,13 +389,13 @@ class WorkDir:
     # -- Phase output -------------------------------------------------------
 
     def save_output(self, markdown: str) -> None:
-        """Write the merged phase output to ``output.md``."""
-        path = self._pass1_path / self._OUTPUT_FILE
+        """Write the merged phase output to ``merged.md``."""
+        path = self._path / self._MERGED_FILE
         path.write_text(markdown, encoding="utf-8")
 
     def load_output(self) -> str | None:
         """Read the phase output if it exists."""
-        path = self._pass1_path / self._OUTPUT_FILE
+        path = self._path / self._MERGED_FILE
         if not path.exists():
             return None
         return path.read_text(encoding="utf-8")
