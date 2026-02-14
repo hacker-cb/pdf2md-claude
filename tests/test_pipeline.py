@@ -265,18 +265,13 @@ class TestProcess:
     def test_process_merges_runs_steps_and_writes(self, tmp_path):
         output_file = tmp_path / "result.md"
         step = RecordingStep(label="transform", suffix="\n## Added by step")
+        
+        # Pipeline derives staging dir from output_file -> result.staging
+        (tmp_path / "result.staging" / "pass1").mkdir(parents=True)
         pipeline = _make_pipeline(steps=[step], output_file=output_file)
-
-        # Create work_dir with staging/pass1 directories.
-        from pdf2md_claude.workdir import WorkDir
-        staging_dir = tmp_path / "test.staging"
-        staging_dir.mkdir()
-        (staging_dir / "pass1").mkdir()
-        work_dir = WorkDir(staging_dir)
 
         ctx, step_timings = pipeline._process(
             parts=["# Title\n\nSome content"],
-            work_dir=work_dir,
         )
 
         assert output_file.exists()
