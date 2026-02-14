@@ -1,6 +1,6 @@
 """Work directory for chunked PDF conversion with resume support.
 
-Manages a ``.chunks/`` directory alongside the output file, persisting
+Manages a ``.staging/`` directory alongside the output file, persisting
 each chunk's markdown, context tail, and usage stats to disk immediately
 after conversion.  On resume, already-converted chunks are skipped.
 
@@ -71,7 +71,7 @@ class ChunkUsageStats:
 
 
 class WorkDir:
-    """Manages a ``.chunks/`` work directory for chunked conversion.
+    """Manages a ``.staging/`` work directory for chunked conversion.
 
     Handles manifest validation, per-chunk save/load, and aggregated
     stats persistence.  All cross-chunk data flows through the
@@ -80,34 +80,37 @@ class WorkDir:
 
     _MANIFEST_FILE = "manifest.json"
     _STATS_FILE = "stats.json"
+    _PASS1_SUBDIR = "pass1"
+    _OUTPUT_FILE = "output.md"
 
     def __init__(self, path: Path) -> None:
-        """Wrap a ``.chunks/`` directory path.
+        """Wrap a ``.staging/`` directory path.
 
         The directory is not created until :meth:`create_or_validate`
         is called.
 
         Args:
-            path: Path to the ``.chunks/`` directory.
+            path: Path to the ``.staging/`` directory.
         """
         self._path = path
+        self._pass1_path = path / self._PASS1_SUBDIR
         self._manifest: Manifest | None = None
 
     @property
     def path(self) -> Path:
-        """Path to the ``.chunks/`` directory."""
+        """Path to the ``.staging/`` directory."""
         return self._path
 
     # -- Naming helpers (1-indexed, zero-padded) ----------------------------
 
     def _chunk_md(self, index: int) -> Path:
-        return self._path / f"chunk_{index + 1:02d}.md"
+        return self._pass1_path / f"chunk_{index + 1:02d}.md"
 
     def _chunk_context(self, index: int) -> Path:
-        return self._path / f"chunk_{index + 1:02d}_context.md"
+        return self._pass1_path / f"chunk_{index + 1:02d}_context.md"
 
     def _chunk_meta(self, index: int) -> Path:
-        return self._path / f"chunk_{index + 1:02d}_meta.json"
+        return self._pass1_path / f"chunk_{index + 1:02d}_meta.json"
 
     # -- Manifest -----------------------------------------------------------
 
@@ -151,6 +154,7 @@ class WorkDir:
         )
 
         self._path.mkdir(parents=True, exist_ok=True)
+        self._pass1_path.mkdir(exist_ok=True)
         manifest_file = self._path / self._MANIFEST_FILE
 
         if manifest_file.exists():
@@ -293,7 +297,7 @@ class WorkDir:
         Args:
             stats: Aggregated usage stats for the full document.
         """
-        path = self._path / self._STATS_FILE
+        path = self._pass1_path / self._STATS_FILE
         path.write_text(
             json.dumps(asdict(stats), indent=2) + "\n",
             encoding="utf-8",
@@ -306,7 +310,7 @@ class WorkDir:
             ``DocumentUsageStats`` instance, or ``None`` if the file
             does not exist or is corrupt (returns ``None`` on error).
         """
-        path = self._path / self._STATS_FILE
+        path = self._pass1_path / self._STATS_FILE
         if not path.exists():
             return None
         try:
@@ -329,6 +333,7 @@ class WorkDir:
             return
         shutil.rmtree(self._path)
         self._path.mkdir(parents=True, exist_ok=True)
+        self._pass1_path.mkdir(exist_ok=True)
         self._manifest = None
 
     def load_manifest(self) -> Manifest | None:
@@ -380,3 +385,17 @@ class WorkDir:
             RuntimeError: If the manifest file does not exist on disk.
         """
         return self._load_manifest().total_pages
+
+    # -- Phase output -------------------------------------------------------
+
+    def save_output(self, markdown: str) -> None:
+        """Write the merged phase output to ``output.md``."""
+        path = self._pass1_path / self._OUTPUT_FILE
+        path.write_text(markdown, encoding="utf-8")
+
+    def load_output(self) -> str | None:
+        """Read the phase output if it exists."""
+        path = self._pass1_path / self._OUTPUT_FILE
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8")

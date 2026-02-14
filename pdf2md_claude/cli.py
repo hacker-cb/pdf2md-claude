@@ -364,7 +364,7 @@ Examples:
         nargs="+",
         type=Path,
         help="PDF file(s) to re-merge "
-             "(must have existing .chunks/ directories)",
+             "(must have existing .staging/ directories)",
     )
 
     # -- validate --------------------------------------------------------------

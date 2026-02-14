@@ -277,7 +277,7 @@ class ConversionPipeline:
         self._steps = steps
         self._pdf_path = pdf_path
         self._output_file = output_file
-        self._work_dir_path = output_file.with_suffix(".chunks")
+        self._work_dir_path = output_file.with_suffix(".staging")
 
     # -- public API --------------------------------------------------------
 
@@ -352,7 +352,7 @@ class ConversionPipeline:
             if manifest is not None and manifest.model_id != model_id:
                 return True
             # Missing/corrupt manifest: output file exists, no reason
-            # to force reconversion (user may have deleted .chunks/).
+            # to force reconversion (user may have deleted .staging/).
         return False
 
     def convert(
@@ -396,7 +396,7 @@ class ConversionPipeline:
 
         # 4–6. Merge, run steps, write.
         parts = [cr.markdown for cr in result.chunks]
-        ctx, step_timings = self._process(parts)
+        ctx, step_timings = self._process(parts, work_dir)
 
         return PipelineResult(
             stats=result.stats,
@@ -411,19 +411,19 @@ class ConversionPipeline:
         """Re-run merge + steps + write from cached chunks on disk.
 
         No API calls are made.  Useful for iterating on merge/post-processing
-        logic after a conversion has already populated the ``.chunks/`` dir.
+        logic after a conversion has already populated the ``.staging/`` dir.
 
         Returns:
             :class:`PipelineResult` with validation results and output path.
 
         Raises:
-            RuntimeError: If the ``.chunks/`` directory or manifest is missing.
+            RuntimeError: If the ``.staging/`` directory or manifest is missing.
         """
         work_dir = WorkDir(self._work_dir_path)
 
         if not work_dir.path.exists():
             raise RuntimeError(
-                f"Chunks directory not found: {work_dir.path}\n"
+                f"Staging directory not found: {work_dir.path}\n"
                 f"Run a full conversion first before using --remerge."
             )
 
@@ -446,7 +446,7 @@ class ConversionPipeline:
         parts = [work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
 
         # 3–5. Merge, run steps, write.
-        ctx, step_timings = self._process(parts)
+        ctx, step_timings = self._process(parts, work_dir)
 
         # Load stats from cache if available (for display purposes).
         stats = work_dir.load_stats()
@@ -511,6 +511,7 @@ class ConversionPipeline:
     def _process(
         self,
         parts: list[str],
+        work_dir: WorkDir,
     ) -> tuple[ProcessingContext, dict[str, float]]:
         """Merge chunks, run all steps, and write the output file.
 
@@ -518,11 +519,13 @@ class ConversionPipeline:
 
         Args:
             parts: List of markdown strings from chunks.
+            work_dir: Work directory for saving phase output.
 
         Returns:
             Tuple of (context after all steps, per-step timings dict).
         """
         markdown = self._merge(parts)
+        work_dir.save_output(markdown)
         ctx = ProcessingContext(
             markdown=markdown,
             pdf_path=self._pdf_path,
