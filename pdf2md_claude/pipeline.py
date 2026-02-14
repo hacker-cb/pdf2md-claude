@@ -303,8 +303,8 @@ class ConversionPipeline:
         pdf_path: Path,
         output_file: Path,
         *,
-        api_key: str | None = None,
-        model: ModelConfig | None = None,
+        api_key: str,
+        model: ModelConfig,
         use_cache: bool = False,
         max_retries: int = 10,
         system_prompt: str | None = None,
@@ -317,13 +317,7 @@ class ConversionPipeline:
         self._pdf_path = pdf_path
         self._output_file = output_file
         self._work_dir = WorkDir(output_file.with_suffix(".staging"))
-        
-        # API/converter configuration
-        self._api_key = api_key
         self._model = model
-        self._use_cache = use_cache
-        self._max_retries = max_retries
-        self._system_prompt = system_prompt
         
         # Step configuration
         self._image_mode = image_mode
@@ -334,6 +328,23 @@ class ConversionPipeline:
         
         # Build step chain
         self._steps = self._build_steps()
+        
+        # Create API objects
+        client_kwargs: dict = {"api_key": api_key}
+        if model.beta_header:
+            _log.debug("  Enabling beta header: %s", model.beta_header)
+            client_kwargs["default_headers"] = {"anthropic-beta": model.beta_header}
+        
+        self._client: anthropic.Anthropic = anthropic.Anthropic(**client_kwargs)
+        self._api: ClaudeApi = ClaudeApi(
+            self._client, model,
+            use_cache=use_cache,
+            max_retries=max_retries,
+        )
+        self._converter: PdfConverter = PdfConverter(
+            self._api, model,
+            system_prompt=system_prompt,
+        )
 
     def _build_steps(self) -> list[ProcessingStep]:
         """Build the processing step chain from configuration flags.
@@ -415,12 +426,11 @@ class ConversionPipeline:
         if force or not self._output_file.exists():
             return True
         # Output exists -- check manifest for model staleness.
-        if self._model is not None:
-            manifest = self._work_dir.load_manifest()
-            if manifest is not None and manifest.model_id != self._model.model_id:
-                return True
-            # Missing/corrupt manifest: output file exists, no reason
-            # to force reconversion (user may have deleted .staging/).
+        manifest = self._work_dir.load_manifest()
+        if manifest is not None and manifest.model_id != self._model.model_id:
+            return True
+        # Missing/corrupt manifest: output file exists, no reason
+        # to force reconversion (user may have deleted .staging/).
         return False
 
     def run(
@@ -470,8 +480,7 @@ class ConversionPipeline:
 
         Raises:
             ValueError: If ``from_step`` has an unsupported value.
-            RuntimeError: If ``from_step="merge"`` but staging directory is missing,
-                or if full conversion is requested but api_key/model are not provided.
+            RuntimeError: If ``from_step="merge"`` but staging directory is missing.
         """
         # Validate from_step early.
         if from_step is not None and from_step != "merge":
@@ -479,26 +488,10 @@ class ConversionPipeline:
 
         if from_step != "merge":
             # Full API-based conversion.
-            if self._api_key is None or self._model is None:
-                raise RuntimeError(
-                    "Full conversion requires api_key and model. "
-                    "Pass them to ConversionPipeline() or use --from merge."
-                )
-            
             if force:
                 self._work_dir.invalidate()
 
-            client = self._create_client()
-            api = ClaudeApi(
-                client, self._model,
-                use_cache=self._use_cache,
-                max_retries=self._max_retries,
-            )
-            converter = PdfConverter(
-                api, self._model,
-                system_prompt=self._system_prompt,
-            )
-            result: ConversionResult = converter.convert(
+            result: ConversionResult = self._converter.convert(
                 self._pdf_path, self._work_dir, pages_per_chunk, max_pages=max_pages,
             )
 
@@ -560,18 +553,6 @@ class ConversionPipeline:
             "  Saved: %s (%d lines)",
             ctx.output_file, ctx.markdown.count("\n") + 1,
         )
-
-    def _create_client(self) -> anthropic.Anthropic:
-        """Create an Anthropic client with beta headers if needed.
-        
-        Returns:
-            Configured Anthropic client instance.
-        """
-        client_kwargs: dict = {"api_key": self._api_key}
-        if self._model and self._model.beta_header:
-            _log.debug("  Enabling beta header: %s", self._model.beta_header)
-            client_kwargs["default_headers"] = {"anthropic-beta": self._model.beta_header}
-        return anthropic.Anthropic(**client_kwargs)
 
     def _load_chunks(self) -> tuple[list[str], DocumentUsageStats, int, int]:
         """Load chunk markdown and stats from the work directory.

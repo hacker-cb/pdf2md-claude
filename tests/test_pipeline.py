@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from pdf2md_claude.formatter import FormatMarkdownStep
+from pdf2md_claude.models import MODELS
 from pdf2md_claude.pipeline import (
     ConversionPipeline,
     ExtractImagesStep,
@@ -90,7 +91,12 @@ def _make_pipeline(
     If steps are provided, they override the default step chain by directly
     setting pipeline._steps after construction.
     """
-    pipeline = ConversionPipeline(pdf_path, output_file)
+    pipeline = ConversionPipeline(
+        pdf_path,
+        output_file,
+        api_key="test-key",
+        model=MODELS["sonnet"],
+    )
     if steps is not None:
         pipeline._steps = steps
     return pipeline
@@ -441,7 +447,9 @@ class TestResolvePagesPerChunk:
     def test_no_workdir_returns_requested(self, tmp_path: Path):
         """When no workdir exists, returns the requested value."""
         output_file = tmp_path / "doc.md"
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 10
 
@@ -450,7 +458,9 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=15)
 
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(15) == 15
 
@@ -459,7 +469,9 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 20
 
@@ -468,7 +480,9 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
         import logging
         with caplog.at_level(logging.WARNING, logger="pipeline"):
@@ -486,7 +500,9 @@ class TestResolvePagesPerChunk:
         staging_dir.mkdir()
         (staging_dir / "manifest.json").write_text("bad json", encoding="utf-8")
 
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 10
 
@@ -495,7 +511,9 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10, force=True) == 10
 
@@ -504,7 +522,9 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
         import logging
         with caplog.at_level(logging.WARNING, logger="pipeline"):
@@ -526,7 +546,9 @@ class TestRunFromStepValidation:
     def test_unsupported_from_step_raises_value_error(self, tmp_path: Path):
         """run() raises ValueError for unsupported from_step values."""
         output_file = tmp_path / "doc.md"
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
 
         with pytest.raises(ValueError, match="Unsupported --from step: 'unknown'"):
@@ -535,7 +557,9 @@ class TestRunFromStepValidation:
     def test_merge_passes_validation_guard(self, tmp_path: Path):
         """from_step='merge' passes the ValueError guard (hits RuntimeError next)."""
         output_file = tmp_path / "doc.md"
-        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
         pipeline._steps = []
         # No staging dir → RuntimeError proves it passed the ValueError check.
         with pytest.raises(RuntimeError, match="Staging directory not found"):
