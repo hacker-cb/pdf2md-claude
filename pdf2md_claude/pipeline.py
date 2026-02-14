@@ -477,68 +477,18 @@ class ConversionPipeline:
         if from_step is not None and from_step != "merge":
             raise ValueError(f"Unsupported --from step: {from_step!r}")
 
-        if from_step == "merge":
-            # Re-merge from cached chunks (no API calls).
-            if not self._work_dir.path.exists():
-                raise RuntimeError(
-                    f"Staging directory not found: {self._work_dir.path}\n"
-                    f"Run a full conversion first before using --from merge."
-                )
-
-            # 1. Discover chunk count and total pages from manifest.
-            num_chunks = self._work_dir.chunk_count()
-            total_pages = self._work_dir.total_pages()
-            _log.info(
-                "  Re-merging from %d cached chunks (%d pages)...",
-                num_chunks, total_pages,
-            )
-
-            # 2. Verify all chunks exist and load markdown.
-            missing = [i for i in range(num_chunks) if not self._work_dir.has_chunk(i)]
-            if missing:
-                raise RuntimeError(
-                    f"Missing chunks: {', '.join(str(i + 1) for i in missing)}. "
-                    f"Run a full conversion first (without --from merge) to generate them."
-                )
-
-            parts = [self._work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
-
-            # Load stats from cache if available (for display purposes).
-            stats = self._work_dir.load_stats()
-            if stats is None:
-                # Minimal stats when stats.json is missing.
-                stats = DocumentUsageStats(
-                    doc_name=self._output_file.stem,
-                    pages=0, chunks=num_chunks,
-                    input_tokens=0, output_tokens=0,
-                    cache_creation_tokens=0, cache_read_tokens=0,
-                    cost=0.0, elapsed_seconds=0.0,
-                )
-
-            cached_chunks = num_chunks
-            fresh_chunks = 0
-
-        else:
+        if from_step != "merge":
             # Full API-based conversion.
-            # 0. Ensure we have api_key and model for API calls.
             if self._api_key is None or self._model is None:
                 raise RuntimeError(
                     "Full conversion requires api_key and model. "
                     "Pass them to ConversionPipeline() or use --from merge."
                 )
             
-            # 1. Force invalidation if requested.
             if force:
                 self._work_dir.invalidate()
 
-            # 2. Create Anthropic client with beta headers if needed.
-            client_kwargs: dict = {"api_key": self._api_key}
-            if self._model.beta_header:
-                _log.debug("  Enabling beta header: %s", self._model.beta_header)
-                client_kwargs["default_headers"] = {"anthropic-beta": self._model.beta_header}
-            client = anthropic.Anthropic(**client_kwargs)
-
-            # 3. Create API wrapper and converter.
+            client = self._create_client()
             api = ClaudeApi(
                 client, self._model,
                 use_cache=self._use_cache,
@@ -548,8 +498,6 @@ class ConversionPipeline:
                 api, self._model,
                 system_prompt=self._system_prompt,
             )
-
-            # 4. Convert (chunked, with disk resume).
             result: ConversionResult = converter.convert(
                 self._pdf_path, self._work_dir, pages_per_chunk, max_pages=max_pages,
             )
@@ -558,6 +506,9 @@ class ConversionPipeline:
             stats = result.stats
             cached_chunks = result.cached_chunks
             fresh_chunks = result.fresh_chunks
+        else:
+            # Re-merge from cached chunks (no API calls).
+            parts, stats, cached_chunks, fresh_chunks = self._load_chunks()
 
         # Common tail: merge, run steps, write, and return result.
         ctx, step_timings = self._process(parts)
@@ -609,6 +560,62 @@ class ConversionPipeline:
             "  Saved: %s (%d lines)",
             ctx.output_file, ctx.markdown.count("\n") + 1,
         )
+
+    def _create_client(self) -> anthropic.Anthropic:
+        """Create an Anthropic client with beta headers if needed.
+        
+        Returns:
+            Configured Anthropic client instance.
+        """
+        client_kwargs: dict = {"api_key": self._api_key}
+        if self._model and self._model.beta_header:
+            _log.debug("  Enabling beta header: %s", self._model.beta_header)
+            client_kwargs["default_headers"] = {"anthropic-beta": self._model.beta_header}
+        return anthropic.Anthropic(**client_kwargs)
+
+    def _load_chunks(self) -> tuple[list[str], DocumentUsageStats, int, int]:
+        """Load chunk markdown and stats from the work directory.
+        
+        Returns:
+            Tuple of (parts, stats, cached_chunks, fresh_chunks).
+            
+        Raises:
+            RuntimeError: If staging directory is missing or chunks are incomplete.
+        """
+        if not self._work_dir.path.exists():
+            raise RuntimeError(
+                f"Staging directory not found: {self._work_dir.path}\n"
+                f"Run a full conversion first before using --from merge."
+            )
+
+        num_chunks = self._work_dir.chunk_count()
+        total_pages = self._work_dir.total_pages()
+        _log.info(
+            "  Re-merging from %d cached chunks (%d pages)...",
+            num_chunks, total_pages,
+        )
+
+        missing = [i for i in range(num_chunks) if not self._work_dir.has_chunk(i)]
+        if missing:
+            raise RuntimeError(
+                f"Missing chunks: {', '.join(str(i + 1) for i in missing)}. "
+                f"Run a full conversion first (without --from merge) to generate them."
+            )
+
+        parts = [self._work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
+
+        stats = self._work_dir.load_stats()
+        if stats is None:
+            # Minimal stats when stats.json is missing.
+            stats = DocumentUsageStats(
+                doc_name=self._output_file.stem,
+                pages=0, chunks=num_chunks,
+                input_tokens=0, output_tokens=0,
+                cache_creation_tokens=0, cache_read_tokens=0,
+                cost=0.0, elapsed_seconds=0.0,
+            )
+
+        return parts, stats, num_chunks, 0
 
     def _process(
         self,
