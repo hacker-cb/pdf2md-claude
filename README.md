@@ -42,7 +42,10 @@ pdf2md-claude convert docs/*.pdf
 # Custom output directory
 pdf2md-claude convert *.pdf -o output/
 
-# Convert multiple PDFs in parallel (4 at a time)
+# Convert multiple PDFs in parallel (auto: one worker per document)
+pdf2md-claude convert *.pdf -j
+
+# Convert multiple PDFs in parallel (exactly 4 workers)
 pdf2md-claude convert *.pdf -j 4
 
 # Also works via python -m
@@ -86,7 +89,7 @@ pdf2md-claude init-rules [PATH]             Generate a rules template
 
 ```
   -o, --output-dir DIR   Output directory (default: same directory as each PDF)
-  -j, --jobs N           Process N documents in parallel (default: 1)
+  -j, --jobs [N]         Process documents in parallel (-j = auto, -j N = fixed)
   -v, --verbose          Enable verbose logging
   -f, --force            Force reconversion even if output exists
   --model MODEL          Claude model to use (default: opus)

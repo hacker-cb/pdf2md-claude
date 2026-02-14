@@ -154,6 +154,9 @@ def _setup_logging(verbose: bool) -> None:
 # Argument parser
 # ---------------------------------------------------------------------------
 
+_JOBS_AUTO = 0
+"""Sentinel for ``-j`` without a number (auto = one worker per document)."""
+
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser with subcommands."""
@@ -179,9 +182,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "-j", "--jobs",
         type=int,
         default=1,
+        nargs="?",
+        const=_JOBS_AUTO,
         metavar="N",
-        help="Number of documents to process in parallel (default: 1). "
-             "Each document's chunks are still processed sequentially.",
+        help="Number of documents to process in parallel. "
+             "'-j' alone = one worker per document; "
+             "'-j N' = exactly N workers (default: 1, sequential).",
     )
 
     image_parent = argparse.ArgumentParser(add_help=False)
@@ -947,9 +953,9 @@ def _cmd_convert(args: argparse.Namespace) -> int:
             output_dir.mkdir(parents=True, exist_ok=True)
 
         jobs: int = args.jobs
-        if jobs < 1:
-            _log.error("--jobs must be at least 1")
-            return 1
+        if jobs <= _JOBS_AUTO:
+            # -j without a number (or -j 0): auto = one worker per document.
+            jobs = len(pdf_paths)
 
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []
