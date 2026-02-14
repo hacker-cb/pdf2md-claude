@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from pdf2md_claude.formatter import FormatMarkdownStep
 from pdf2md_claude.pipeline import (
     ConversionPipeline,
     ExtractImagesStep,
@@ -40,6 +41,10 @@ class RecordingStep:
     def name(self) -> str:
         return self.label
 
+    @property
+    def key(self) -> str:
+        return self.label.lower().replace(" ", "-")
+
     def run(self, ctx: ProcessingContext) -> None:
         self.calls.append(self.label)
         if self.suffix:
@@ -52,6 +57,10 @@ class FailingStep:
 
     @property
     def name(self) -> str:
+        return "failing"
+
+    @property
+    def key(self) -> str:
         return "failing"
 
     def run(self, ctx: ProcessingContext) -> None:
@@ -135,6 +144,28 @@ class TestProcessingStepProtocol:
         assert ExtractImagesStep().name == "extract images"
         assert ValidateStep().name == "validate"
 
+    def test_builtin_steps_have_key_property(self):
+        """All built-in steps must have a key property."""
+        steps = [
+            MergeContinuedTablesStep(),
+            ExtractImagesStep(),
+            StripAIDescriptionsStep(),
+            FormatMarkdownStep(),
+            ValidateStep(),
+        ]
+        for step in steps:
+            assert hasattr(step, "key"), f"{step.name} missing key property"
+            assert isinstance(step.key, str), f"{step.name}.key must be str"
+            assert step.key, f"{step.name}.key must be non-empty"
+
+    def test_builtin_step_keys_are_stable(self):
+        """Verify specific key values for built-in steps."""
+        assert MergeContinuedTablesStep().key == "tables"
+        assert ExtractImagesStep().key == "images"
+        assert StripAIDescriptionsStep().key == "strip-ai"
+        assert FormatMarkdownStep().key == "format"
+        assert ValidateStep().key == "validate"
+
 
 # ---------------------------------------------------------------------------
 # _merge() tests
@@ -204,6 +235,10 @@ class TestRunSteps:
         class WarnStep:
             @property
             def name(self) -> str:
+                return "warn"
+
+            @property
+            def key(self) -> str:
                 return "warn"
 
             def run(self, ctx: ProcessingContext) -> None:

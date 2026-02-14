@@ -79,7 +79,6 @@ The CLI uses subcommands. Run `pdf2md-claude COMMAND --help` for full options.
 
 ```
 pdf2md-claude convert PDF [PDF ...]         Convert PDFs to Markdown
-pdf2md-claude remerge PDF [PDF ...]         Re-merge from cached chunks (no API)
 pdf2md-claude validate PDF [PDF ...]       Validate converted output (no API)
 pdf2md-claude show-prompt [--rules FILE]    Print the system prompt
 pdf2md-claude init-rules [PATH]             Generate a rules template
@@ -102,17 +101,7 @@ pdf2md-claude init-rules [PATH]             Generate a rules template
   --image-mode MODE      Image extraction mode (auto/snap/bbox/debug)
   --image-dpi DPI        DPI for page-region rendering (default: 600)
   --strip-ai-descriptions  Remove AI-generated image descriptions
-```
-
-### remerge options
-
-```
-  -o, --output-dir DIR   Output directory
-  -v, --verbose          Enable verbose logging
-  --no-images            Skip image extraction
-  --image-mode MODE      Image extraction mode
-  --image-dpi DPI        DPI for rendering
-  --strip-ai-descriptions  Remove AI-generated image descriptions
+  --from STEP            Skip earlier stages and start from STEP (merge = re-merge from cached chunks)
 ```
 
 Run without arguments to display help.
