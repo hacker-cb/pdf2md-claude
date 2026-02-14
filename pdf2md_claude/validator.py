@@ -19,6 +19,7 @@ from __future__ import annotations
 import bisect
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -574,6 +575,13 @@ _TABLE_TITLE_RE = re.compile(
     r"\*\*Table\s+(?:\d+|[A-Z]\.\d+)\s*[–—-]\s*([^*]+)\*\*"
 )
 
+# Extract <thead>...</thead> and <tbody>...</tbody> sections.
+_THEAD_RE = re.compile(r"<thead\b[^>]*>(.*?)</thead>", re.DOTALL | re.IGNORECASE)
+_TBODY_RE = re.compile(r"<tbody\b[^>]*>(.*?)</tbody>", re.DOTALL | re.IGNORECASE)
+
+# Maximum per-table column-consistency warnings before summarising.
+_MAX_COLUMN_WARNINGS_PER_TABLE = 3
+
 
 def _find_table_title(markdown: str, table_start: int) -> str | None:
     """Find the **Table N – Title** line preceding a <table> tag.
@@ -592,6 +600,20 @@ def _find_table_title(markdown: str, table_start: int) -> str | None:
         return None
     # Return the table number portion (e.g. "Table 6").
     return f"Table {match.group(1)}"
+
+
+def _deterministic_mode(counts: list[int]) -> int:
+    """Return the mode of *counts* with deterministic tie-breaking.
+
+    When multiple values share the highest frequency, the **largest**
+    value wins.  This is appropriate for column-count analysis because
+    missing cells (under-count) are the most common table error, so
+    the larger value is more likely the intended table width.
+    """
+    freq = Counter(counts)
+    max_freq = freq.most_common(1)[0][1]
+    candidates = [v for v, c in freq.items() if c == max_freq]
+    return max(candidates)
 
 
 def _compute_table_column_counts(table_html: str) -> list[int]:
@@ -616,14 +638,14 @@ def _compute_table_column_counts(table_html: str) -> list[int]:
         cells = _CELL_RE.findall(row_html)
 
         col = 0  # current column pointer
-        # Expand rowspan tracker if needed (first row sets initial size).
-        # We'll grow it dynamically as we discover the width.
+        width = 0  # total occupied columns (explicit + inherited)
 
         for _tag, attrs in cells:
             # Skip past columns occupied by rowspans from previous rows.
             while col < len(rowspan_remaining) and rowspan_remaining[col] > 0:
                 rowspan_remaining[col] -= 1
                 col += 1
+                width += 1
 
             colspan_m = _COLSPAN_RE.search(attrs)
             rowspan_m = _ROWSPAN_RE.search(attrs)
@@ -639,13 +661,18 @@ def _compute_table_column_counts(table_html: str) -> list[int]:
                 if rowspan > 1:
                     rowspan_remaining[c] = rowspan - 1
             col += colspan
+            width += colspan
 
-        # Skip past any trailing columns still occupied by rowspans.
-        while col < len(rowspan_remaining) and rowspan_remaining[col] > 0:
-            rowspan_remaining[col] -= 1
-            col += 1
+        # Account for ALL remaining rowspan-occupied columns beyond the
+        # last explicit cell — iterate the full grid, not just consecutive
+        # occupied slots (free gaps between occupied slots must not stop
+        # the scan).
+        for c in range(col, len(rowspan_remaining)):
+            if rowspan_remaining[c] > 0:
+                rowspan_remaining[c] -= 1
+                width += 1
 
-        counts.append(col)
+        counts.append(width)
 
     return counts
 
@@ -656,39 +683,97 @@ def _check_table_column_consistency(
     """Check that every row in each HTML table has the same column count.
 
     Parses colspan/rowspan attributes to compute the effective column count
-    per row.  Mismatches are reported as warnings with the table title
-    (if available), page number, and the row index / counts involved.
+    per row.  Analysis is split by ``<thead>`` / ``<tbody>`` sections so
+    that rowspan tracking resets at the boundary.
+
+    The *expected* width is determined by the **mode** (most frequent count)
+    across all rows.  When header and body widths disagree, a single
+    header-vs-body diagnostic is emitted.  Per-row mismatch warnings are
+    capped at :data:`_MAX_COLUMN_WARNINGS_PER_TABLE` per table.
     """
     pidx: _PageIndex | None = None
     for table_match in TABLE_BLOCK_RE.finditer(markdown):
         table_html = table_match.group(0)
-        counts = _compute_table_column_counts(table_html)
 
-        if len(counts) < 2:
+        # --- compute per-section column counts -------------------------
+        thead_m = _THEAD_RE.search(table_html)
+        tbody_m = _TBODY_RE.search(table_html)
+
+        # Compute counts independently per section (rowspan resets).
+        thead_counts = (
+            _compute_table_column_counts(thead_m.group(0))
+            if thead_m else []
+        )
+        tbody_counts = (
+            _compute_table_column_counts(tbody_m.group(0))
+            if tbody_m else []
+        )
+
+        # Fall back to whole-table counting when sections are absent.
+        if not thead_counts and not tbody_counts:
+            all_counts = _compute_table_column_counts(table_html)
+        else:
+            all_counts = thead_counts + tbody_counts
+
+        if len(all_counts) < 2:
             continue
 
-        # Use the maximum count as the expected column count (most rows
-        # agree on the correct width; mismatches are typically fewer).
-        expected = max(counts)
+        # --- determine expected width via mode -------------------------
+        expected = _deterministic_mode(all_counts)
 
-        mismatches = [
-            (i, c) for i, c in enumerate(counts) if c != expected
-        ]
-        if not mismatches:
-            continue
-
+        # --- resolve table label and page ------------------------------
         title = _find_table_title(markdown, table_match.start())
         label = title if title else "HTML table"
         if pidx is None:
             pidx = _PageIndex(markdown)
         page_suffix = pidx.format_page(table_match.start())
 
+        # --- header-vs-body width diagnostic ---------------------------
+        # Compare the predominant widths of thead and tbody directly.
+        # This avoids misleading noise when a single outlier header row
+        # (e.g. an empty <tr></tr> with only inherited rowspan columns)
+        # has fewer columns but the header majority matches the body.
+        if thead_counts and tbody_counts:
+            thead_mode = _deterministic_mode(thead_counts)
+            tbody_mode = _deterministic_mode(tbody_counts)
+            if thead_mode != tbody_mode:
+                def _fmt_widths(ws: list[int]) -> str:
+                    widths = sorted(set(ws))
+                    return (
+                        str(widths[0]) if len(widths) == 1
+                        else f"{widths[0]}-{widths[-1]}"
+                    )
+                result.warnings.append((
+                    CAT_TABLE_COLUMNS,
+                    f"{label}{page_suffix}: header rows define "
+                    f"{_fmt_widths(thead_counts)} columns but body rows "
+                    f"have {_fmt_widths(tbody_counts)} columns "
+                    f"(expected {expected})",
+                ))
+
+        # --- per-row mismatches (capped) -------------------------------
+        mismatches = [
+            (i, c) for i, c in enumerate(all_counts) if c != expected
+        ]
+        if not mismatches:
+            continue
+
+        reported = 0
         for row_idx, actual in mismatches:
+            if reported >= _MAX_COLUMN_WARNINGS_PER_TABLE:
+                remaining = len(mismatches) - reported
+                result.warnings.append((
+                    CAT_TABLE_COLUMNS,
+                    f"{label}{page_suffix}: ... and {remaining} more row(s) "
+                    f"with column count != {expected}",
+                ))
+                break
             result.warnings.append((
                 CAT_TABLE_COLUMNS,
                 f"{label}{page_suffix}: row {row_idx} has {actual} columns, "
                 f"expected {expected}",
             ))
+            reported += 1
 
 
 def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:

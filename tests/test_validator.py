@@ -1162,10 +1162,14 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "row 0" in warnings[0]
-        assert "3 columns" in warnings[0]
-        assert "expected 4" in warnings[0]
+        # Header-vs-body diagnostic + per-row mismatch for the header row.
+        # Deterministic mode (prefer max) → expected=4, so the header
+        # row (3 cols) is the outlier.
+        assert len(warnings) == 2
+        assert "header rows define 3 columns" in warnings[0]
+        assert "body rows have 4 columns" in warnings[0]
+        assert "row 0" in warnings[1]
+        assert "3 columns" in warnings[1]
 
     def test_separator_row_wrong_count(self):
         """Empty separator row with fewer cells than data rows should warn."""
@@ -1181,6 +1185,8 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
+        # Header mode (4) matches expected (4), so no header-vs-body
+        # diagnostic — only the per-row mismatch for the separator row.
         assert len(warnings) == 1
         assert "row 1" in warnings[0]  # 0=header, 1=separator
         assert "3 columns" in warnings[0]
@@ -1198,8 +1204,8 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "Table 6" in warnings[0]
+        assert len(warnings) >= 1
+        assert any("Table 6" in w for w in warnings)
 
     def test_multiple_tables_only_broken_warned(self):
         """Only the broken table should produce warnings."""
@@ -1218,8 +1224,9 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "Table 2" in warnings[0]
+        assert len(warnings) >= 1
+        assert all("Table 2" in w for w in warnings)
+        assert not any("Table 1" in w for w in warnings)
 
     def test_rowspan_and_colspan_combined(self):
         """A cell with both rowspan and colspan should be handled correctly."""
@@ -1251,8 +1258,8 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "HTML table" in warnings[0]
+        assert len(warnings) >= 1
+        assert any("HTML table" in w for w in warnings)
 
     def test_page_number_in_warning(self):
         """Warning message should include the page number."""
@@ -1267,9 +1274,9 @@ class TestTableColumnConsistency:
         })
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "page 5" in warnings[0]
-        assert "Table 10" in warnings[0]
+        assert len(warnings) >= 1
+        assert any("page 5" in w for w in warnings)
+        assert any("Table 10" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
