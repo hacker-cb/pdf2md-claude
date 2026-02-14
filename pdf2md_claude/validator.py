@@ -35,12 +35,32 @@ from pdf2md_claude.markers import (
 _log = logging.getLogger("validator")
 
 
+# ---------------------------------------------------------------------------
+# Warning / error category constants
+# ---------------------------------------------------------------------------
+
+CAT_PAGE_MARKERS = "Page markers"
+CAT_IMAGE_BLOCKS = "Image block pairing"
+CAT_SECTION_GAP = "Section gap"
+CAT_DUPLICATE_HEADINGS = "Duplicate headings"
+CAT_SECTION_ORDERING = "Section ordering"
+CAT_MISSING_REFERENCE = "Missing table/figure reference"
+CAT_TABLE_COLUMNS = "Table column consistency"
+CAT_BINARY_SEQUENCE = "Binary sequence"
+CAT_FABRICATION = "Fabrication detection"
+CAT_PAGE_FIDELITY = "Page fidelity"
+
+
 @dataclass
 class ValidationResult:
-    """Result of validating a converted markdown document."""
+    """Result of validating a converted markdown document.
 
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    Errors and warnings are stored as ``(category, message)`` tuples
+    to enable grouped reporting in the validation summary.
+    """
+
+    errors: list[tuple[str, str]] = field(default_factory=list)
+    warnings: list[tuple[str, str]] = field(default_factory=list)
     info: list[str] = field(default_factory=list)
 
     @property
@@ -48,11 +68,21 @@ class ValidationResult:
         """True if no errors (warnings are tolerable)."""
         return len(self.errors) == 0
 
+    @property
+    def warning_messages(self) -> list[str]:
+        """Plain warning message strings (without category)."""
+        return [msg for _, msg in self.warnings]
+
+    @property
+    def error_messages(self) -> list[str]:
+        """Plain error message strings (without category)."""
+        return [msg for _, msg in self.errors]
+
     def log_all(self) -> None:
         """Log all errors, warnings, and informational messages."""
-        for e in self.errors:
+        for _, e in self.errors:
             _log.error("  ✗ %s", e)
-        for w in self.warnings:
+        for _, w in self.warnings:
             _log.warning("  ⚠ %s", w)
         for i in self.info:
             _log.info("  ℹ %s", i)
@@ -153,7 +183,7 @@ def _check_page_markers(markdown: str, result: ValidationResult) -> None:
     markers = _PAGE_MARKER_RE.findall(markdown)
 
     if not markers:
-        result.errors.append("No page markers found in output")
+        result.errors.append((CAT_PAGE_MARKERS, "No page markers found in output"))
         return
 
     pages = [int(m) for m in markers]
@@ -169,19 +199,21 @@ def _check_page_markers(markdown: str, result: ValidationResult) -> None:
     # Check for non-monotonic markers (pages going backward) — report ALL.
     for i in range(1, len(pages)):
         if pages[i] < pages[i - 1]:
-            result.errors.append(
+            result.errors.append((
+                CAT_PAGE_MARKERS,
                 f"Page markers not monotonic: page {pages[i]} "
-                f"follows page {pages[i - 1]}"
-            )
+                f"follows page {pages[i - 1]}",
+            ))
 
     # Check for gaps (every page should have a marker).
     for i in range(1, len(pages)):
         gap = pages[i] - pages[i - 1]
         if gap > 1:
-            result.errors.append(
+            result.errors.append((
+                CAT_PAGE_MARKERS,
                 f"Missing page marker(s): page {pages[i - 1]} jumps to "
-                f"page {pages[i]} (missing {gap - 1} page(s))"
-            )
+                f"page {pages[i]} (missing {gap - 1} page(s))",
+            ))
 
 
 def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
@@ -191,9 +223,10 @@ def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
 
     if not end_pages:
         if begin_pages:
-            result.errors.append(
-                "No PDF_PAGE_END markers found (PDF_PAGE_BEGIN markers present)"
-            )
+            result.errors.append((
+                CAT_PAGE_MARKERS,
+                "No PDF_PAGE_END markers found (PDF_PAGE_BEGIN markers present)",
+            ))
         return
 
     result.info.append(
@@ -207,17 +240,19 @@ def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
     unmatched_ends = end_set - begin_set
     if unmatched_ends:
         for p in sorted(unmatched_ends):
-            result.errors.append(
-                f"PDF_PAGE_END {p} has no matching PDF_PAGE_BEGIN"
-            )
+            result.errors.append((
+                CAT_PAGE_MARKERS,
+                f"PDF_PAGE_END {p} has no matching PDF_PAGE_BEGIN",
+            ))
 
     # Every BEGIN page should have a matching END page.
     missing_ends = begin_set - end_set
     if missing_ends:
         for p in sorted(missing_ends):
-            result.errors.append(
-                f"PDF_PAGE_BEGIN {p} has no matching PDF_PAGE_END"
-            )
+            result.errors.append((
+                CAT_PAGE_MARKERS,
+                f"PDF_PAGE_BEGIN {p} has no matching PDF_PAGE_END",
+            ))
 
 
 def _check_image_block_pairing(markdown: str, result: ValidationResult) -> None:
@@ -243,29 +278,32 @@ def _check_image_block_pairing(markdown: str, result: ValidationResult) -> None:
             begin_count += 1
             if in_block:
                 loc = f" (page {open_page})" if open_page else ""
-                result.errors.append(
+                result.errors.append((
+                    CAT_IMAGE_BLOCKS,
                     f"Nested IMAGE_BEGIN on page {current_page} — "
-                    f"previous block opened{loc} was not closed"
-                )
+                    f"previous block opened{loc} was not closed",
+                ))
             in_block = True
             open_page = current_page
 
         if IMAGE_END.re.search(line):
             end_count += 1
             if not in_block:
-                result.errors.append(
+                result.errors.append((
+                    CAT_IMAGE_BLOCKS,
                     f"IMAGE_END without matching IMAGE_BEGIN "
-                    f"on page {current_page}"
-                )
+                    f"on page {current_page}",
+                ))
             in_block = False
             open_page = None
 
     # Trailing unclosed block.
     if in_block:
         loc = f" on page {open_page}" if open_page else ""
-        result.errors.append(
-            f"IMAGE_BEGIN{loc} was never closed with IMAGE_END"
-        )
+        result.errors.append((
+            CAT_IMAGE_BLOCKS,
+            f"IMAGE_BEGIN{loc} was never closed with IMAGE_END",
+        ))
 
     if begin_count or end_count:
         result.info.append(
@@ -343,11 +381,12 @@ def _check_heading_sequence(markdown: str, result: ValidationResult) -> None:
                 # Build full section identifiers.
                 prev_id = f"{parent}.{prev_num}" if parent else str(prev_num)
                 cur_id = f"{parent}.{cur_num}" if parent else str(cur_num)
-                result.warnings.append(
+                result.warnings.append((
+                    CAT_SECTION_GAP,
                     f"Section gap: section {prev_id} jumps to "
                     f"section {cur_id} (missing {gap - 1} section(s))"
-                    f"{page_suffix}"
-                )
+                    f"{page_suffix}",
+                ))
 
 
 def _check_duplicate_headings(markdown: str, result: ValidationResult) -> None:
@@ -385,17 +424,19 @@ def _check_duplicate_headings(markdown: str, result: ValidationResult) -> None:
         return
 
     sorted_sections = sorted(duplicates.keys(), key=_section_sort_key)
-    result.warnings.append(
+    result.warnings.append((
+        CAT_DUPLICATE_HEADINGS,
         f"Duplicate section headings: {len(sorted_sections)} sections "
-        f"appear more than once"
-    )
+        f"appear more than once",
+    ))
     for section in sorted_sections:
         pages = duplicates[section]
         page_str = ", ".join(f"p{p}" for p in pages)
-        result.warnings.append(
+        result.warnings.append((
+            CAT_DUPLICATE_HEADINGS,
             f"  Section {section} appears {len(pages)} times "
-            f"(pages: {page_str})"
-        )
+            f"(pages: {page_str})",
+        ))
 
 
 def _check_section_continuity(markdown: str, result: ValidationResult) -> None:
@@ -424,10 +465,11 @@ def _check_section_continuity(markdown: str, result: ValidationResult) -> None:
             if pidx is None:
                 pidx = _PageIndex(markdown)
             page_suffix = pidx.format_page(matches[i].start())
-            result.warnings.append(
+            result.warnings.append((
+                CAT_SECTION_ORDERING,
                 f"Section ordering: {cur_section} follows "
-                f"{prev_section} (backward jump){page_suffix}"
-            )
+                f"{prev_section} (backward jump){page_suffix}",
+            ))
 
 
 # ---------------------------------------------------------------------------
@@ -470,10 +512,11 @@ def _check_missing_tables(markdown: str, result: ValidationResult) -> None:
                 f" (referenced on page {', '.join(str(p) for p in pages)})"
                 if pages else ""
             )
-            result.warnings.append(
+            result.warnings.append((
+                CAT_MISSING_REFERENCE,
                 f"Table {t} is referenced in text but not defined"
-                f" in output{page_suffix}"
-            )
+                f" in output{page_suffix}",
+            ))
 
 
 def _check_missing_figures(markdown: str, result: ValidationResult) -> None:
@@ -499,10 +542,11 @@ def _check_missing_figures(markdown: str, result: ValidationResult) -> None:
                 f" (referenced on page {', '.join(str(p) for p in pages)})"
                 if pages else ""
             )
-            result.warnings.append(
+            result.warnings.append((
+                CAT_MISSING_REFERENCE,
                 f"Figure {f} is referenced in text but not defined"
-                f" in output{page_suffix}"
-            )
+                f" in output{page_suffix}",
+            ))
 
 
 # ---------------------------------------------------------------------------
@@ -640,10 +684,11 @@ def _check_table_column_consistency(
         page_suffix = pidx.format_page(table_match.start())
 
         for row_idx, actual in mismatches:
-            result.warnings.append(
+            result.warnings.append((
+                CAT_TABLE_COLUMNS,
                 f"{label}{page_suffix}: row {row_idx} has {actual} columns, "
-                f"expected {expected}"
-            )
+                f"expected {expected}",
+            ))
 
 
 def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:
@@ -674,15 +719,17 @@ def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:
 
         for i in range(1, len(int_values)):
             if int_values[i] == int_values[i - 1]:
-                result.warnings.append(
+                result.warnings.append((
+                    CAT_BINARY_SEQUENCE,
                     f"Duplicate binary value in {label}{page_suffix}: "
-                    f"{bin_values[i]}b appears twice consecutively"
-                )
+                    f"{bin_values[i]}b appears twice consecutively",
+                ))
             elif int_values[i] < int_values[i - 1]:
-                result.warnings.append(
+                result.warnings.append((
+                    CAT_BINARY_SEQUENCE,
                     f"Binary sequence not monotonic in {label}{page_suffix}: "
-                    f"{bin_values[i]}b follows {bin_values[i - 1]}b"
-                )
+                    f"{bin_values[i]}b follows {bin_values[i - 1]}b",
+                ))
 
 
 # ---------------------------------------------------------------------------
@@ -737,9 +784,10 @@ def _check_fabrication(markdown: str, result: ValidationResult) -> None:
             # Show the matched text (truncated) for context.
             snippet = match.group(0)[:100]
             page_suffix = pidx.format_page(match.start())
-            result.errors.append(
-                f"Possible fabricated {name}{page_suffix}: \"{snippet}\""
-            )
+            result.errors.append((
+                CAT_FABRICATION,
+                f"Possible fabricated {name}{page_suffix}: \"{snippet}\"",
+            ))
 
 
 # ---------------------------------------------------------------------------
@@ -846,10 +894,11 @@ def check_page_fidelity(
         page_contents = _extract_page_contents(markdown)
         if not page_contents:
             if PAGE_BEGIN.re.search(markdown):
-                result.errors.append(
+                result.errors.append((
+                    CAT_PAGE_FIDELITY,
                     "Fidelity check skipped: PAGE_BEGIN markers present "
-                    "but no PAGE_END markers (needed for content extraction)"
-                )
+                    "but no PAGE_END markers (needed for content extraction)",
+                ))
             return
 
         suspect: list[tuple[int, float]] = []
@@ -893,15 +942,17 @@ def check_page_fidelity(
                 suspect.append((page_num, overlap))
 
         if suspect:
-            result.warnings.append(
+            result.warnings.append((
+                CAT_PAGE_FIDELITY,
                 f"Page fidelity: {len(suspect)} page(s) have low text overlap "
-                f"with PDF source"
-            )
+                f"with PDF source",
+            ))
             for page_num, ratio in suspect:
-                result.warnings.append(
+                result.warnings.append((
+                    CAT_PAGE_FIDELITY,
                     f"  Page {page_num}: {ratio:.0%} of markdown words found "
                     f"in PDF text (threshold: "
-                    f"{_FIDELITY_OVERLAP_THRESHOLD:.0%})"
-                )
+                    f"{_FIDELITY_OVERLAP_THRESHOLD:.0%})",
+                ))
     finally:
         doc.close()

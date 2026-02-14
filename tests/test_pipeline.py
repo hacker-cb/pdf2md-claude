@@ -109,7 +109,7 @@ class TestProcessingContext:
         """Each context gets its own ValidationResult instance."""
         ctx1 = _make_ctx()
         ctx2 = _make_ctx()
-        ctx1.validation.errors.append("err")
+        ctx1.validation.errors.append(("test", "err"))
         assert ctx2.validation.ok
 
 
@@ -207,12 +207,12 @@ class TestRunSteps:
                 return "warn"
 
             def run(self, ctx: ProcessingContext) -> None:
-                ctx.validation.warnings.append("test warning")
+                ctx.validation.warnings.append(("test", "test warning"))
 
         pipeline = _make_pipeline(steps=[WarnStep()])
         ctx = _make_ctx()
         pipeline._run_steps(ctx)
-        assert "test warning" in ctx.validation.warnings
+        assert "test warning" in ctx.validation.warning_messages
 
     def test_step_exception_propagates(self):
         pipeline = _make_pipeline(steps=[FailingStep()])

@@ -113,7 +113,7 @@ class TestCheckPageMarkers:
         """Empty input (no markers) should produce an error."""
         r = ValidationResult()
         _check_page_markers("No markers here", r)
-        assert any("No page markers" in e for e in r.errors)
+        assert any("No page markers" in e for e in r.error_messages)
 
     def test_monotonic_no_errors(self):
         """Correct monotonic sequence should produce no errors."""
@@ -131,7 +131,7 @@ class TestCheckPageMarkers:
         r = ValidationResult()
         md = "<!-- PDF_PAGE_BEGIN 15 -->\n<!-- PDF_PAGE_BEGIN 4 -->"
         _check_page_markers(md, r)
-        assert any("not monotonic" in e for e in r.errors)
+        assert any("not monotonic" in e for e in r.error_messages)
 
     def test_all_jumps_reported(self):
         """Multiple backward jumps should ALL be reported."""
@@ -143,7 +143,7 @@ class TestCheckPageMarkers:
             "<!-- PDF_PAGE_BEGIN 3 -->"
         )
         _check_page_markers(md, r)
-        mono_errors = [e for e in r.errors if "not monotonic" in e]
+        mono_errors = [e for e in r.error_messages if "not monotonic" in e]
         assert len(mono_errors) == 2
 
     def test_gap_is_error(self):
@@ -151,7 +151,7 @@ class TestCheckPageMarkers:
         r = ValidationResult()
         md = "<!-- PDF_PAGE_BEGIN 14 -->\n<!-- PDF_PAGE_BEGIN 16 -->"
         _check_page_markers(md, r)
-        assert any("Missing page marker" in e for e in r.errors)
+        assert any("Missing page marker" in e for e in r.error_messages)
 
     def test_consecutive_no_gap_error(self):
         """Consecutive pages should not produce a gap error."""
@@ -162,7 +162,7 @@ class TestCheckPageMarkers:
             "<!-- PDF_PAGE_BEGIN 16 -->"
         )
         _check_page_markers(md, r)
-        gap_errors = [e for e in r.errors if "Missing" in e]
+        gap_errors = [e for e in r.error_messages if "Missing" in e]
         assert len(gap_errors) == 0
 
 
@@ -179,7 +179,7 @@ class TestCheckPageEndMarkers:
         r = ValidationResult()
         md = "<!-- PDF_PAGE_BEGIN 1 -->\nContent"
         _check_page_end_markers(md, r)
-        assert any("No PDF_PAGE_END" in e for e in r.errors)
+        assert any("No PDF_PAGE_END" in e for e in r.error_messages)
 
     def test_matching_pairs_no_errors(self):
         """Matched begin/end pairs should produce no errors."""
@@ -199,7 +199,7 @@ class TestCheckPageEndMarkers:
             "<!-- PDF_PAGE_END 99 -->"
         )
         _check_page_end_markers(md, r)
-        assert any("PDF_PAGE_END 99 has no matching" in e for e in r.errors)
+        assert any("PDF_PAGE_END 99 has no matching" in e for e in r.error_messages)
 
     def test_missing_end_is_error(self):
         """Begin marker without matching end should error."""
@@ -209,7 +209,7 @@ class TestCheckPageEndMarkers:
             "<!-- PDF_PAGE_BEGIN 2 -->\nMore"
         )
         _check_page_end_markers(md, r)
-        assert any("PDF_PAGE_BEGIN 2 has no matching" in e for e in r.errors)
+        assert any("PDF_PAGE_BEGIN 2 has no matching" in e for e in r.error_messages)
 
     def test_no_markers_at_all_no_warn(self):
         """No markers at all should produce no warnings."""
@@ -239,7 +239,7 @@ class TestCheckBinarySequences:
             "</table>"
         )
         _check_binary_sequences(html, r)
-        assert any("Duplicate binary" in w for w in r.warnings)
+        assert any("Duplicate binary" in w for w in r.warning_messages)
 
     def test_non_monotonic_binary_detected(self):
         """Backward jump in binary values should be flagged."""
@@ -252,7 +252,7 @@ class TestCheckBinarySequences:
             "</table>"
         )
         _check_binary_sequences(html, r)
-        assert any("not monotonic" in w for w in r.warnings)
+        assert any("not monotonic" in w for w in r.warning_messages)
 
     def test_correct_sequence_no_warnings(self):
         """Monotonically increasing binary sequence should be clean."""

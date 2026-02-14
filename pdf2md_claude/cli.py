@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 import time
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -561,6 +562,9 @@ def _validate_files(
     validated = 0
     failed = 0
 
+    # category -> list of (doc_name, count)
+    category_summary: dict[str, list[tuple[str, int]]] = defaultdict(list)
+
     for pdf_path in pdf_paths:
         doc_name = pdf_path.stem
         md_path = resolve_output(pdf_path, output_dir)
@@ -598,12 +602,32 @@ def _validate_files(
         else:
             _log.info("  ✓ OK")
 
+        # Accumulate per-category counts for the grouped summary.
+        cat_counts = Counter(cat for cat, _ in (*result.errors, *result.warnings))
+        for cat, cnt in cat_counts.items():
+            category_summary[cat].append((doc_name, cnt))
+
         total_errors += len(result.errors)
         total_warnings += len(result.warnings)
         validated += 1
 
+    # Print grouped summary before the totals line.
     _log.info("")
     _log.info(_SUMMARY_SEP)
+    if category_summary:
+        _log.info("Problem summary by category:")
+        _log.info("")
+        for cat, file_counts in sorted(category_summary.items()):
+            total_cat = sum(cnt for _, cnt in file_counts)
+            _log.info(
+                "  %s (%d issue(s) in %d file(s)):",
+                cat, total_cat, len(file_counts),
+            )
+            for doc_name, cnt in file_counts:
+                _log.info("    %-40s %d", doc_name, cnt)
+            _log.info("")
+        _log.info(_SUMMARY_SEP)
+
     parts = [f"{validated} validated"]
     if failed:
         parts.append(f"{failed} failed")
