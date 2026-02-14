@@ -633,46 +633,6 @@ def _validate_files(
     return 1 if (total_errors > 0 or failed > 0) else 0
 
 
-def _convert_single_pdf(
-    pdf_path: Path,
-    *,
-    model: ModelConfig,
-    client: anthropic.Anthropic,
-    pipeline: ConversionPipeline,
-    pages_per_chunk: int,
-    max_pages: int | None,
-    force: bool,
-    use_cache: bool,
-    max_retries: int,
-    rules_path: Path | None,
-    rules_cache: dict[Path, str],
-    from_step: str | None = None,
-) -> DocumentUsageStats:
-    """Convert a single PDF and return its usage stats.
-
-    Raises on failure so the caller can count success/failure.
-    """
-    system_prompt = _resolve_rules(pdf_path, rules_path, rules_cache)
-
-    api = ClaudeApi(
-        client, model,
-        use_cache=use_cache,
-        max_retries=max_retries,
-    )
-    converter = PdfConverter(
-        api, model,
-        system_prompt=system_prompt,
-    )
-    result = pipeline.run(
-        converter,
-        pages_per_chunk=pages_per_chunk,
-        max_pages=max_pages,
-        force=force,
-        from_step=from_step,
-    )
-    return result.stats
-
-
 @dataclass
 class _DocConvertResult:
     """Result of processing a single document (for parallel collection)."""
@@ -698,8 +658,9 @@ def _convert_one_document(
     system_prompt: str | None,
     from_step: str | None = None,
 ) -> _DocConvertResult:
-    """Thread-safe worker for converting a single PDF.
+    """Convert a single PDF: check staleness, build API objects, run pipeline.
 
+    Used as the per-document worker in both sequential and parallel modes.
     Sets the per-thread document context so that all log lines emitted
     during this document's processing carry the ``[doc_name]`` prefix.
     """
@@ -900,6 +861,14 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         failure = 0
         cached = 0
 
+        # Pre-resolve rules per PDF (before branching to sequential/parallel).
+        rules_cache: dict[Path, str] = {}
+        system_prompts: dict[Path, str | None] = {}
+        for pdf_path in pdf_paths:
+            system_prompts[pdf_path] = _resolve_rules(
+                pdf_path, args.rules, rules_cache,
+            )
+
         # Resolve effective worker count.
         jobs = args.jobs
         if jobs <= _JOBS_AUTO:
@@ -911,15 +880,6 @@ def _cmd_convert(args: argparse.Namespace) -> int:
             # Compute aligned prefix width for parallel log output.
             global _doc_prefix_width  # noqa: PLW0603
             _doc_prefix_width = max(len(p.stem) for p in pdf_paths) + 2  # +2 for []
-
-            # Pre-resolve rules per PDF in the main thread (rules_cache is
-            # only touched here, then discarded).
-            rules_cache: dict[Path, str] = {}
-            system_prompts: dict[Path, str | None] = {}
-            for pdf_path in pdf_paths:
-                system_prompts[pdf_path] = _resolve_rules(
-                    pdf_path, args.rules, rules_cache,
-                )
 
             max_workers = min(jobs, len(pdf_paths))
             if max_workers > 1:
@@ -956,57 +916,28 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                         failure += 1
         else:
             # -- Sequential path -----------------------------------------------
-            rules_cache_seq: dict[Path, str] = {}
-
             for pdf_path in pdf_paths:
-                doc_name = pdf_path.stem
-                output_file = resolve_output(pdf_path, output_dir)
-                pipeline = ConversionPipeline(steps, pdf_path, output_file)
-
-                # Skip if already up-to-date (unless force or from_step is set).
-                if not pipeline.needs_conversion(
-                    force=args.force or bool(args.from_step),
-                    model_id=model.model_id,
-                ):
-                    cached_stats = pipeline.load_cached_stats()
-                    if cached_stats is not None:
-                        all_stats.append(cached_stats)
-                        _log.info(
-                            "⊙ %s (cached, $%.2f)",
-                            doc_name, cached_stats.cost,
-                        )
-                    else:
-                        _log.info("⊙ %s (cached)", doc_name)
-                    cached += 1
-                    continue
-
-                _log.info("%s:", doc_name)
-
-                effective_ppc = pipeline.resolve_pages_per_chunk(
-                    pages_per_chunk, force=args.force,
+                result = _convert_one_document(
+                    pdf_path,
+                    output_dir=output_dir,
+                    model=model,
+                    client=client,
+                    steps=steps,
+                    pages_per_chunk=pages_per_chunk,
+                    max_pages=args.max_pages,
+                    force=args.force,
+                    use_cache=args.cache,
+                    max_retries=args.retries,
+                    system_prompt=system_prompts[pdf_path],
+                    from_step=args.from_step,
                 )
-
-                try:
-                    stats = _convert_single_pdf(
-                        pdf_path,
-                        model=model,
-                        client=client,
-                        pipeline=pipeline,
-                        pages_per_chunk=effective_ppc,
-                        max_pages=args.max_pages,
-                        force=args.force,
-                        use_cache=args.cache,
-                        max_retries=args.retries,
-                        rules_path=args.rules,
-                        rules_cache=rules_cache_seq,
-                        from_step=args.from_step,
-                    )
-                    all_stats.append(stats)
+                if result.stats is not None:
+                    all_stats.append(result.stats)
+                if result.status == "converted":
                     success += 1
-                except Exception as e:
-                    _log.error(
-                        "  ✗ %s: %s: %s", doc_name, type(e).__name__, e,
-                    )
+                elif result.status == "cached":
+                    cached += 1
+                else:
                     failure += 1
 
         total_elapsed = time.time() - total_start
