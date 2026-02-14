@@ -371,6 +371,7 @@ class TestPromptFormatting:
             page_end=37,
             page_count=20,
             page_start_plus_1=19,
+            page_start_plus_2=20,
         )
         assert "part 2 of 5" in result
         assert "pages 18 through 37" in result
@@ -387,6 +388,7 @@ class TestPromptFormatting:
             page_end=10,
             page_count=10,
             page_start_plus_1=2,
+            page_start_plus_2=3,
         )
         assert PAGE_BEGIN.example in result
         assert PAGE_END.example in result

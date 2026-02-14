@@ -82,11 +82,21 @@ _RULE_SKIP = f"""\
 **Skip**: Page headers, page footers, page numbers, and watermarks.
    - **CRITICAL**: When you skip entire page's content, you MUST still emit \
 the page markers for that page. Place `{PAGE_SKIP.marker}` between the begin/end \
-markers to signal the skip is intentional:
+markers to signal the skip is intentional. Multiple consecutive pages \
+can each be skipped this way — every page keeps its own number:
    ```
    {PAGE_BEGIN.format(9)}
    {PAGE_SKIP.marker}
    {PAGE_END.format(9)}
+   {PAGE_BEGIN.format(10)}
+   {PAGE_SKIP.marker}
+   {PAGE_END.format(10)}
+   {PAGE_BEGIN.format(11)}
+   {PAGE_SKIP.marker}
+   {PAGE_END.format(11)}
+   {PAGE_BEGIN.format(12)}
+   ...page 12 content (first non-skipped page)...
+   {PAGE_END.format(12)}
    ```
    This preserves correct page numbering. NEVER silently omit page \
 markers — every page in the range must have a begin/end pair."""
@@ -324,21 +334,25 @@ Convert these PDF pages to Markdown following the system instructions.
 
 IMPORTANT: These PDF pages correspond to pages {{page_start}} through \
 {{page_end}} of the original document ({{page_count}} pages). Wrap each \
-page's content with `{PAGE_BEGIN.example}` and `{PAGE_END.example}` markers using the original page \
-numbers: the first page of this chunk is page {{page_start}}, the next is \
-page {{page_start_plus_1}}, and so on sequentially. You MUST emit exactly \
-{{page_count}} begin/end marker pairs, one pair for each page from \
-{{page_start}} to {{page_end}}.
-
-CRITICAL — page-to-content mapping: This PDF excerpt contains exactly \
-{{page_count}} physical pages. Physical page 1 of this excerpt is always \
-document page {{page_start}}, physical page 2 is always document page \
-{{page_start_plus_1}}, and so on. Place each physical page's content under \
-its corresponding page number. If a physical page contains only Table of \
-Contents, boilerplate, or other skippable material, emit {PAGE_SKIP.marker} for \
-that page number — do NOT shift content from later physical pages into \
-earlier page numbers.
+page's content with `{PAGE_BEGIN.example}` and `{PAGE_END.example}` markers. You MUST \
+emit exactly {{page_count}} begin/end marker pairs, one pair for each \
+page from {{page_start}} to {{page_end}}.
 
 {{previous_context_block}}
+
+BEFORE YOU START — page assignment procedure (CRITICAL):
+1. This PDF excerpt has exactly {{page_count}} physical pages.
+2. Assign page numbers strictly by position: the 1st page you see = \
+page {{page_start}}, the 2nd = page {{page_start_plus_1}}, the 3rd = \
+page {{page_start_plus_2}}, and so on through page {{page_end}}.
+3. Go through each physical page in order. For each page, either \
+convert its content or emit `{PAGE_SKIP.marker}` — but always under \
+that page's assigned number.
+**COMMON ERROR**: When the first pages of a chunk are Table of Contents \
+or boilerplate, you may be tempted to skip them and assign page \
+{{page_start}} to the first "real content" page. This is WRONG. Those \
+TOC/boilerplate pages ARE pages {{page_start}}, {{page_start_plus_1}}, \
+etc. — emit `{PAGE_SKIP.marker}` for each one. The first content page \
+gets the NEXT number in sequence.
 
 Output ONLY the markdown content."""
