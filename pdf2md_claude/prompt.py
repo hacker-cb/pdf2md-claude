@@ -58,6 +58,12 @@ image-only pages, or skipped content (e.g., Table of Contents).
    - For skipped pages, place `{PAGE_SKIP.marker}` between the markers (see the **Skip** rule).
    - N is the original document page number — the correct page range \
 will be specified in the conversion instructions.
+   - **Physical page anchoring** (CRITICAL): Page numbers are determined \
+by physical position in the PDF, NOT by content type. The 1st physical \
+page of the excerpt = 1st page number, the 2nd = 2nd page number, etc. \
+Do NOT renumber or reorder pages. If a physical page's content is \
+skipped, that page number still gets a `{PAGE_SKIP.marker}` marker — subsequent \
+pages keep their original numbers.
    - Example structure:
    ```
    {PAGE_BEGIN.format(5)}
@@ -323,6 +329,15 @@ numbers: the first page of this chunk is page {{page_start}}, the next is \
 page {{page_start_plus_1}}, and so on sequentially. You MUST emit exactly \
 {{page_count}} begin/end marker pairs, one pair for each page from \
 {{page_start}} to {{page_end}}.
+
+CRITICAL — page-to-content mapping: This PDF excerpt contains exactly \
+{{page_count}} physical pages. Physical page 1 of this excerpt is always \
+document page {{page_start}}, physical page 2 is always document page \
+{{page_start_plus_1}}, and so on. Place each physical page's content under \
+its corresponding page number. If a physical page contains only Table of \
+Contents, boilerplate, or other skippable material, emit {PAGE_SKIP.marker} for \
+that page number — do NOT shift content from later physical pages into \
+earlier page numbers.
 
 {{previous_context_block}}
 
