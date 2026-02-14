@@ -503,3 +503,52 @@ class TestResolvePagesPerChunk:
         assert not any(
             "pages_per_chunk" in msg for msg in caplog.messages
         )
+
+
+# ---------------------------------------------------------------------------
+# run() from_step validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunFromStepValidation:
+    """Tests for ConversionPipeline.run() from_step validation."""
+
+    def test_unsupported_from_step_raises_value_error(self, tmp_path: Path):
+        """run() raises ValueError for unsupported from_step values."""
+        from unittest.mock import Mock
+
+        output_file = tmp_path / "doc.md"
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        
+        # Mock converter (not used for this test, but required by run signature)
+        mock_converter = Mock()
+
+        with pytest.raises(ValueError, match="Unsupported --from step: 'unknown'"):
+            pipeline.run(mock_converter, pages_per_chunk=10, from_step="unknown")
+
+    def test_merge_passes_validation_guard(self, tmp_path: Path):
+        """from_step='merge' passes the ValueError guard (hits RuntimeError next)."""
+        from unittest.mock import Mock
+
+        output_file = tmp_path / "doc.md"
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        # No staging dir → RuntimeError proves it passed the ValueError check.
+        with pytest.raises(RuntimeError, match="Staging directory not found"):
+            pipeline.run(Mock(), pages_per_chunk=10, from_step="merge")
+
+    def test_none_from_step_runs_full_conversion(self, tmp_path: Path):
+        """from_step=None proceeds to full conversion without ValueError."""
+        from unittest.mock import Mock
+
+        output_file = tmp_path / "doc.md"
+        (tmp_path / "doc.staging" / "pass1").mkdir(parents=True)
+
+        mock_converter = Mock()
+        mock_converter.convert.return_value = Mock(
+            chunks=[], stats=Mock(), cached_chunks=0, fresh_chunks=0,
+        )
+
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        result = pipeline.run(mock_converter, pages_per_chunk=10, from_step=None)
+        assert result is not None
+        mock_converter.convert.assert_called_once()

@@ -421,8 +421,13 @@ class ConversionPipeline:
             :class:`PipelineResult` with stats, validation, and output path.
 
         Raises:
+            ValueError: If ``from_step`` has an unsupported value.
             RuntimeError: If ``from_step="merge"`` but staging directory is missing.
         """
+        # Validate from_step early.
+        if from_step is not None and from_step != "merge":
+            raise ValueError(f"Unsupported --from step: {from_step!r}")
+
         if from_step == "merge":
             # Re-merge from cached chunks (no API calls).
             if not self._work_dir.path.exists():
@@ -449,9 +454,6 @@ class ConversionPipeline:
 
             parts = [self._work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
 
-            # 3–5. Merge, run steps, write.
-            ctx, step_timings = self._process(parts)
-
             # Load stats from cache if available (for display purposes).
             stats = self._work_dir.load_stats()
             if stats is None:
@@ -464,14 +466,8 @@ class ConversionPipeline:
                     cost=0.0, elapsed_seconds=0.0,
                 )
 
-            return PipelineResult(
-                stats=stats,
-                output_file=self._output_file,
-                validation=ctx.validation,
-                cached_chunks=num_chunks,
-                fresh_chunks=0,
-                step_timings=step_timings,
-            )
+            cached_chunks = num_chunks
+            fresh_chunks = 0
 
         else:
             # Full API-based conversion.
@@ -484,18 +480,22 @@ class ConversionPipeline:
                 self._pdf_path, self._work_dir, pages_per_chunk, max_pages=max_pages,
             )
 
-            # 3–5. Merge, run steps, write.
             parts = [cr.markdown for cr in result.chunks]
-            ctx, step_timings = self._process(parts)
+            stats = result.stats
+            cached_chunks = result.cached_chunks
+            fresh_chunks = result.fresh_chunks
 
-            return PipelineResult(
-                stats=result.stats,
-                output_file=self._output_file,
-                validation=ctx.validation,
-                cached_chunks=result.cached_chunks,
-                fresh_chunks=result.fresh_chunks,
-                step_timings=step_timings,
-            )
+        # Common tail: merge, run steps, write, and return result.
+        ctx, step_timings = self._process(parts)
+
+        return PipelineResult(
+            stats=stats,
+            output_file=self._output_file,
+            validation=ctx.validation,
+            cached_chunks=cached_chunks,
+            fresh_chunks=fresh_chunks,
+            step_timings=step_timings,
+        )
 
     # -- internal methods --------------------------------------------------
 
