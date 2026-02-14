@@ -27,9 +27,7 @@ import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
-from pdf2md_claude.claude_api import ClaudeApi
-from pdf2md_claude.client import create_client
-from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter
+from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
 from pdf2md_claude.pipeline import ConversionPipeline, resolve_output
@@ -623,7 +621,7 @@ def _convert_one_document(
     *,
     output_dir: Path | None,
     model: ModelConfig,
-    client: anthropic.Anthropic,
+    api_key: str,
     pages_per_chunk: int,
     max_pages: int | None,
     force: bool,
@@ -637,7 +635,7 @@ def _convert_one_document(
     no_format: bool,
     from_step: str | None = None,
 ) -> _DocConvertResult:
-    """Convert a single PDF: check staleness, build API objects, run pipeline.
+    """Convert a single PDF: check staleness, run pipeline.
 
     Used as the per-document worker in both sequential and parallel modes.
     Sets the per-thread document context so that all log lines emitted
@@ -650,6 +648,11 @@ def _convert_one_document(
         pipeline = ConversionPipeline(
             pdf_path,
             output_file,
+            api_key=api_key,
+            model=model,
+            use_cache=use_cache,
+            max_retries=max_retries,
+            system_prompt=system_prompt,
             image_mode=image_mode,
             image_dpi=image_dpi,
             no_images=no_images,
@@ -657,9 +660,7 @@ def _convert_one_document(
             no_format=no_format,
         )
 
-        if not pipeline.needs_conversion(
-            force=force or bool(from_step), model_id=model.model_id,
-        ):
+        if not pipeline.needs_conversion(force=force or bool(from_step)):
             cached_stats = pipeline.load_cached_stats()
             if cached_stats is not None:
                 _log.info(
@@ -675,17 +676,7 @@ def _convert_one_document(
             pages_per_chunk, force=force,
         )
 
-        api = ClaudeApi(
-            client, model,
-            use_cache=use_cache,
-            max_retries=max_retries,
-        )
-        converter = PdfConverter(
-            api, model,
-            system_prompt=system_prompt,
-        )
         result = pipeline.run(
-            converter,
             pages_per_chunk=effective_ppc,
             max_pages=max_pages,
             force=force,
@@ -831,12 +822,11 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         else:
             _log.info("Output: next to each PDF")
 
-        # API client setup (always performed).
+        # API key validation (always performed).
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             _log.error("ANTHROPIC_API_KEY environment variable not set")
             return 1
-        client = create_client(api_key, model)
 
         # Ensure output directory exists (if explicitly set).
         if output_dir:
@@ -879,7 +869,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                         pdf_path,
                         output_dir=output_dir,
                         model=model,
-                        client=client,
+                        api_key=api_key,
                         pages_per_chunk=pages_per_chunk,
                         max_pages=args.max_pages,
                         force=args.force,
@@ -912,7 +902,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                     pdf_path,
                     output_dir=output_dir,
                     model=model,
-                    client=client,
+                    api_key=api_key,
                     pages_per_chunk=pages_per_chunk,
                     max_pages=args.max_pages,
                     force=args.force,

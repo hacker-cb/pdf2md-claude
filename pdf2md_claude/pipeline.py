@@ -32,12 +32,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+import anthropic
+
+from pdf2md_claude.claude_api import ClaudeApi
 from pdf2md_claude.converter import ConversionResult, PdfConverter
 from pdf2md_claude.formatter import FormatMarkdownStep
 from pdf2md_claude.images import ImageExtractor, ImageMode
 from pdf2md_claude.markers import IMAGE_AI_DESCRIPTION_BLOCK_RE
 from pdf2md_claude.merger import merge_chunks, merge_continued_tables
-from pdf2md_claude.models import DocumentUsageStats
+from pdf2md_claude.models import DocumentUsageStats, ModelConfig
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
 from pdf2md_claude.workdir import WorkDir
 
@@ -287,10 +290,12 @@ class ConversionPipeline:
         pipeline = ConversionPipeline(
             pdf_path,
             output_file,
+            api_key=api_key,
+            model=model_config,
             image_mode=ImageMode.AUTO,
             image_dpi=600,
         )
-        result = pipeline.run(converter, pages_per_chunk=10)
+        result = pipeline.run(pages_per_chunk=10)
     """
 
     def __init__(
@@ -298,6 +303,11 @@ class ConversionPipeline:
         pdf_path: Path,
         output_file: Path,
         *,
+        api_key: str | None = None,
+        model: ModelConfig | None = None,
+        use_cache: bool = False,
+        max_retries: int = 10,
+        system_prompt: str | None = None,
         image_mode: ImageMode = ImageMode.AUTO,
         image_dpi: int | None = None,
         no_images: bool = False,
@@ -307,6 +317,13 @@ class ConversionPipeline:
         self._pdf_path = pdf_path
         self._output_file = output_file
         self._work_dir = WorkDir(output_file.with_suffix(".staging"))
+        
+        # API/converter configuration
+        self._api_key = api_key
+        self._model = model
+        self._use_cache = use_cache
+        self._max_retries = max_retries
+        self._system_prompt = system_prompt
         
         # Step configuration
         self._image_mode = image_mode
@@ -389,22 +406,18 @@ class ConversionPipeline:
     def needs_conversion(
         self,
         force: bool = False,
-        model_id: str | None = None,
     ) -> bool:
         """Check if the PDF needs to be converted.
 
         Args:
             force: If True, always reconvert.
-            model_id: If provided, also check the cached manifest for model
-                staleness.  When the output file exists but was produced by a
-                different model, return ``True`` (needs reconversion).
         """
         if force or not self._output_file.exists():
             return True
         # Output exists -- check manifest for model staleness.
-        if model_id is not None:
+        if self._model is not None:
             manifest = self._work_dir.load_manifest()
-            if manifest is not None and manifest.model_id != model_id:
+            if manifest is not None and manifest.model_id != self._model.model_id:
                 return True
             # Missing/corrupt manifest: output file exists, no reason
             # to force reconversion (user may have deleted .staging/).
@@ -412,7 +425,6 @@ class ConversionPipeline:
 
     def run(
         self,
-        converter: PdfConverter,
         pages_per_chunk: int,
         *,
         max_pages: int | None = None,
@@ -446,8 +458,7 @@ class ConversionPipeline:
         4. Write output file.
 
         Args:
-            converter: Configured PDF converter (always provided).
-            pages_per_chunk: Pages per conversion chunk (always provided).
+            pages_per_chunk: Pages per conversion chunk.
             max_pages: Optional page cap for debugging.
             force: If True, discard cached chunks and reconvert (ignored when
                 ``from_step`` is set).
@@ -459,7 +470,8 @@ class ConversionPipeline:
 
         Raises:
             ValueError: If ``from_step`` has an unsupported value.
-            RuntimeError: If ``from_step="merge"`` but staging directory is missing.
+            RuntimeError: If ``from_step="merge"`` but staging directory is missing,
+                or if full conversion is requested but api_key/model are not provided.
         """
         # Validate from_step early.
         if from_step is not None and from_step != "merge":
@@ -508,11 +520,36 @@ class ConversionPipeline:
 
         else:
             # Full API-based conversion.
+            # 0. Ensure we have api_key and model for API calls.
+            if self._api_key is None or self._model is None:
+                raise RuntimeError(
+                    "Full conversion requires api_key and model. "
+                    "Pass them to ConversionPipeline() or use --from merge."
+                )
+            
             # 1. Force invalidation if requested.
             if force:
                 self._work_dir.invalidate()
 
-            # 2. Convert (chunked, with disk resume).
+            # 2. Create Anthropic client with beta headers if needed.
+            client_kwargs: dict = {"api_key": self._api_key}
+            if self._model.beta_header:
+                _log.debug("  Enabling beta header: %s", self._model.beta_header)
+                client_kwargs["default_headers"] = {"anthropic-beta": self._model.beta_header}
+            client = anthropic.Anthropic(**client_kwargs)
+
+            # 3. Create API wrapper and converter.
+            api = ClaudeApi(
+                client, self._model,
+                use_cache=self._use_cache,
+                max_retries=self._max_retries,
+            )
+            converter = PdfConverter(
+                api, self._model,
+                system_prompt=self._system_prompt,
+            )
+
+            # 4. Convert (chunked, with disk resume).
             result: ConversionResult = converter.convert(
                 self._pdf_path, self._work_dir, pages_per_chunk, max_pages=max_pages,
             )
