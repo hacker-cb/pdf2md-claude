@@ -30,7 +30,11 @@ class TestDuplicateHeadings:
 
     def _dup_warnings(self, result: ValidationResult) -> list[str]:
         """Extract all duplicate-heading warnings."""
-        return [w for w in result.warnings if "Section " in w or "Duplicate" in w]
+        return [
+            w for w in result.warnings
+            if ("Section " in w or "Duplicate" in w)
+            and "Section ordering" not in w
+        ]
 
     def test_no_duplicates(self):
         md = _wrap_pages(
@@ -132,6 +136,124 @@ class TestDuplicateHeadings:
         assert len(detail_lines) == 2
         assert "Section 9 " in detail_lines[0]
         assert "Section A.1 " in detail_lines[1]
+
+
+# ---------------------------------------------------------------------------
+# _check_section_continuity
+# ---------------------------------------------------------------------------
+
+class TestSectionContinuity:
+    """Tests for backward-jump detection in section ordering."""
+
+    def _continuity_warnings(self, result: ValidationResult) -> list[str]:
+        """Extract all section-ordering warnings."""
+        return [w for w in result.warnings if "Section ordering" in w]
+
+    def test_no_backward_jumps(self):
+        """Clean sequential sections should produce no warnings."""
+        md = _make_pages({
+            1: "## 1 Scope\n\n## 2 References\n",
+            2: "## 3 Definitions\n\n### 3.1 Term A\n\n### 3.2 Term B\n",
+            3: "## 4 General\n\n### 4.1 Overview\n",
+        })
+        r = validate_output(md)
+        assert not self._continuity_warnings(r)
+
+    def test_backward_jump_top_level(self):
+        """Section 4.7 followed by 3.24 should warn."""
+        md = _make_pages({
+            10: "### 4.7 Quiescent mode\n",
+            11: "### 3.24 RAM\n\n### 3.25 ROM\n",
+        })
+        r = validate_output(md)
+        warnings = self._continuity_warnings(r)
+        assert len(warnings) >= 1
+        assert "3.24" in warnings[0]
+        assert "4.7" in warnings[0]
+        assert "backward jump" in warnings[0]
+
+    def test_backward_jump_within_same_parent(self):
+        """Section 3.25 followed by 3.1 should warn."""
+        md = _make_pages({
+            5: "### 3.25 Resolution\n",
+            6: "### 3.1 Broadcast\n",
+        })
+        r = validate_output(md)
+        warnings = self._continuity_warnings(r)
+        assert len(warnings) == 1
+        assert "3.1" in warnings[0]
+        assert "3.25" in warnings[0]
+
+    def test_equal_sections_no_continuity_warning(self):
+        """Equal sections are handled by duplicate check, not continuity."""
+        md = _make_pages({
+            10: "## 4 General\n",
+            15: "## 4 General\n",
+        })
+        r = validate_output(md)
+        # Duplicate check will fire, but NOT continuity check.
+        assert not self._continuity_warnings(r)
+
+    def test_annex_after_numbered_no_warning(self):
+        """Annex sections (A.1) after numbered sections should be valid."""
+        md = _make_pages({
+            80: "## 11 Commands\n",
+            90: "## A Annex\n\n### A.1 Algorithm\n\n### A.2 Example\n",
+        })
+        r = validate_output(md)
+        assert not self._continuity_warnings(r)
+
+    def test_single_heading_no_warning(self):
+        """A single heading cannot have a backward jump."""
+        md = _wrap_pages("## 5 Timing\n", start=1, end=1)
+        r = validate_output(md)
+        assert not self._continuity_warnings(r)
+
+    def test_deep_subsection_backward_jump(self):
+        """Backward jump in deep subsections (9.5.5 -> 9.5.2)."""
+        md = _make_pages({
+            30: "#### 9.5.5 Instance groups\n",
+            31: "#### 9.5.2 Instance number\n",
+        })
+        r = validate_output(md)
+        warnings = self._continuity_warnings(r)
+        assert len(warnings) == 1
+        assert "9.5.2" in warnings[0]
+        assert "9.5.5" in warnings[0]
+
+    def test_page_number_in_warning(self):
+        """Warning message should include the page number."""
+        md = _make_pages({
+            20: "### 4.7 Quiescent mode\n",
+            21: "### 3.24 RAM\n",
+        })
+        r = validate_output(md)
+        warnings = self._continuity_warnings(r)
+        assert len(warnings) >= 1
+        assert "page 21" in warnings[0]
+
+    def test_multiple_backward_jumps(self):
+        """Multiple backward jumps should each be reported."""
+        md = _make_pages({
+            10: "## 4 Overview\n\n### 4.1 General\n",
+            11: "### 3.24 RAM\n\n### 3.25 ROM\n",
+            12: "## 4 General\n\n### 4.1 General\n",
+            13: "### 3.30 Search address\n",
+        })
+        r = validate_output(md)
+        warnings = self._continuity_warnings(r)
+        # At minimum: 4.1 -> 3.24 and 4.1 -> 3.30
+        assert len(warnings) >= 2
+
+    def test_valid_depth_transitions(self):
+        """Going from deep subsection to next parent section is valid."""
+        md = _make_pages({
+            10: "#### 9.5.5 Instance groups\n",
+            11: "### 9.6 Commands\n\n#### 9.6.1 General\n",
+            12: "## 10 Declaration\n",
+        })
+        r = validate_output(md)
+        assert not self._continuity_warnings(r)
 
 
 # ---------------------------------------------------------------------------
@@ -556,7 +678,11 @@ def _write_text_pdf(path, page_texts: list[str]):
 # ---------------------------------------------------------------------------
 
 class TestHeadingSequence:
-    """Tests for heading gap detection."""
+    """Tests for heading gap detection at all depth levels."""
+
+    def _gap_warnings(self, result: ValidationResult) -> list[str]:
+        """Extract all section-gap warnings."""
+        return [w for w in result.warnings if "Section gap" in w]
 
     def test_no_gap(self):
         md = _wrap_pages(
@@ -564,7 +690,7 @@ class TestHeadingSequence:
             start=1, end=3,
         )
         r = validate_output(md)
-        assert not any("Section gap" in w for w in r.warnings)
+        assert not self._gap_warnings(r)
 
     def test_gap_detected(self):
         md = _wrap_pages(
@@ -573,6 +699,82 @@ class TestHeadingSequence:
         )
         r = validate_output(md)
         assert any("Section gap" in w for w in r.warnings)
+
+    def test_subsection_gap_detected(self):
+        """Gap in subsections: 3.1 -> 3.3 missing 3.2."""
+        md = _make_pages({
+            5: "### 3.1 Term A\n",
+            6: "### 3.3 Term C\n",
+        })
+        r = validate_output(md)
+        warnings = self._gap_warnings(r)
+        assert len(warnings) == 1
+        assert "3.1" in warnings[0]
+        assert "3.3" in warnings[0]
+        assert "missing 1" in warnings[0]
+
+    def test_deep_subsection_gap_detected(self):
+        """Gap in deep subsections: 9.11.5 -> 9.11.8 missing 9.11.6, 9.11.7."""
+        md = _make_pages({
+            40: "#### 9.11.5 Reading\n",
+            45: "#### 9.11.8 Memory bank 1\n",
+        })
+        r = validate_output(md)
+        warnings = self._gap_warnings(r)
+        assert len(warnings) == 1
+        assert "9.11.5" in warnings[0]
+        assert "9.11.8" in warnings[0]
+        assert "missing 2" in warnings[0]
+
+    def test_no_subsection_gap(self):
+        """Consecutive subsections should produce no warnings."""
+        md = _make_pages({
+            10: "### 9.1 General\n\n### 9.2 Features\n",
+            11: "### 9.3 Controller\n\n### 9.4 Input\n",
+        })
+        r = validate_output(md)
+        assert not self._gap_warnings(r)
+
+    def test_mixed_depth_no_false_gap(self):
+        """Children between siblings should not cause false parent gaps."""
+        md = _make_pages({
+            10: "### 9.1 General\n\n#### 9.1.1 Sub A\n\n#### 9.1.2 Sub B\n",
+            11: "### 9.2 Features\n",
+        })
+        r = validate_output(md)
+        assert not self._gap_warnings(r)
+
+    def test_duplicate_sections_no_false_gap(self):
+        """Overlapping chunks with duplicate sections should not cause gaps."""
+        md = _make_pages({
+            10: "### 3.24 RAM\n\n### 3.25 Resolution\n\n### 3.26 YES\n",
+            20: "### 3.24 RAM\n\n### 3.25 RAM-RO\n\n### 3.26 RAM-RW\n",
+        })
+        r = validate_output(md)
+        assert not self._gap_warnings(r)
+
+    def test_page_number_in_subsection_gap(self):
+        """Warning should include page number for subsection gaps."""
+        md = _make_pages({
+            5: "### 3.1 Term A\n",
+            8: "### 3.3 Term C\n",
+        })
+        r = validate_output(md)
+        warnings = self._gap_warnings(r)
+        assert len(warnings) == 1
+        assert "page 8" in warnings[0]
+
+    def test_annex_subsection_gap(self):
+        """Gaps in annex subsections (A.1 -> A.3) should be detected."""
+        md = _make_pages({
+            80: "### A.1 Algorithm\n",
+            85: "### A.3 Example\n",
+        })
+        r = validate_output(md)
+        warnings = self._gap_warnings(r)
+        assert len(warnings) == 1
+        assert "A.1" in warnings[0]
+        assert "A.3" in warnings[0]
 
 
 # ---------------------------------------------------------------------------

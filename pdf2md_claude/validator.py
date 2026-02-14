@@ -4,8 +4,9 @@ Checks for common problems in Claude's PDF-to-Markdown conversion:
 - Missing or non-monotonic page markers (BEGIN/END matching and gaps)
 - Missing tables (referenced but not defined)
 - Missing figures (referenced but not defined)
-- Heading sequence gaps (missing top-level sections)
+- Heading sequence gaps at all depth levels (missing sections/subsections)
 - Duplicate numbered headings (same section number appears more than once)
+- Section ordering continuity (backward jumps in section numbering)
 - Non-monotonic or duplicate binary values in HTML tables
 - Table column-count consistency (rowspan/colspan mismatch detection)
 - Fabricated summaries (Claude inventing text to replace omitted content)
@@ -163,6 +164,7 @@ def validate_output(markdown: str) -> ValidationResult:
     _check_image_block_pairing(markdown, result)
     _check_heading_sequence(markdown, result)
     _check_duplicate_headings(markdown, result)
+    _check_section_continuity(markdown, result)
     _check_binary_sequences(markdown, result)
     _check_table_column_consistency(markdown, result)
 
@@ -546,38 +548,61 @@ _SECTION_HEADING_RE = re.compile(
 
 
 def _check_heading_sequence(markdown: str, result: ValidationResult) -> None:
-    """Warn if numbered section headings have gaps (missing sections)."""
+    """Warn if numbered section headings have gaps at any depth level.
+
+    Groups sections by their parent prefix (e.g. all ``3.x`` sections share
+    parent ``"3"``, all ``9.5.x`` sections share parent ``"9.5"``) and checks
+    each group for numeric gaps in the last component.  Duplicate section
+    numbers (from overlapping chunks) are deduplicated before gap checking.
+    """
     matches = list(_SECTION_HEADING_RE.finditer(markdown))
 
     if len(matches) < 2:
         return
 
-    # Check top-level sections (e.g., 1, 2, 3, ...) for gaps.
-    # Each entry: (section_number, match_position).
-    top_level: list[tuple[int, int]] = []
+    # Group sections by parent prefix.
+    # Key: parent prefix string ("" for top-level, "3" for 3.x, "9.5" for 9.5.x).
+    # Value: list of (last_numeric_component, match_position).
+    siblings: dict[str, list[tuple[int, int]]] = {}
+
     for m in matches:
         heading = m.group(1)
         parts = heading.split(".")
-        if len(parts) == 1 and parts[0].isdigit():
-            top_level.append((int(parts[0]), m.start()))
-
-    if len(top_level) < 2:
-        return
+        last = parts[-1]
+        if not last.isdigit():
+            continue  # Skip lettered components (e.g. annex "A")
+        parent = ".".join(parts[:-1])
+        siblings.setdefault(parent, []).append((int(last), m.start()))
 
     pidx: _PageIndex | None = None
-    for i in range(1, len(top_level)):
-        cur_num, cur_pos = top_level[i]
-        prev_num, _prev_pos = top_level[i - 1]
-        gap = cur_num - prev_num
-        if gap > 1:
-            if pidx is None:
-                pidx = _PageIndex(markdown)
-            page_suffix = pidx.format_page(cur_pos)
-            result.warnings.append(
-                f"Section gap: section {prev_num} jumps to "
-                f"section {cur_num} (missing {gap - 1} sections)"
-                f"{page_suffix}"
-            )
+
+    for parent, entries in siblings.items():
+        # Deduplicate: keep only the first occurrence of each number.
+        seen: dict[int, int] = {}
+        for num, pos in entries:
+            if num not in seen:
+                seen[num] = pos
+        sorted_entries = sorted(seen.items())
+
+        if len(sorted_entries) < 2:
+            continue
+
+        for i in range(1, len(sorted_entries)):
+            cur_num, cur_pos = sorted_entries[i]
+            prev_num, _prev_pos = sorted_entries[i - 1]
+            gap = cur_num - prev_num
+            if gap > 1:
+                if pidx is None:
+                    pidx = _PageIndex(markdown)
+                page_suffix = pidx.format_page(cur_pos)
+                # Build full section identifiers.
+                prev_id = f"{parent}.{prev_num}" if parent else str(prev_num)
+                cur_id = f"{parent}.{cur_num}" if parent else str(cur_num)
+                result.warnings.append(
+                    f"Section gap: section {prev_id} jumps to "
+                    f"section {cur_id} (missing {gap - 1} section(s))"
+                    f"{page_suffix}"
+                )
 
 
 def _section_sort_key(section: str) -> tuple:
@@ -634,6 +659,38 @@ def _check_duplicate_headings(markdown: str, result: ValidationResult) -> None:
             f"  Section {section} appears {len(pages)} times "
             f"(pages: {page_str})"
         )
+
+
+def _check_section_continuity(markdown: str, result: ValidationResult) -> None:
+    """Check that section headings follow monotonically non-decreasing order.
+
+    Detects backward jumps in section numbering (e.g. section 4.7 followed
+    by section 3.24), which typically indicates overlapping chunk content
+    during chunked PDF conversion.
+
+    Equal consecutive sections are ignored here — they are already caught
+    by :func:`_check_duplicate_headings`.
+    """
+    matches = list(_SECTION_HEADING_RE.finditer(markdown))
+
+    if len(matches) < 2:
+        return
+
+    pidx: _PageIndex | None = None
+    for i in range(1, len(matches)):
+        cur_section = matches[i].group(1)
+        prev_section = matches[i - 1].group(1)
+        cur_key = _section_sort_key(cur_section)
+        prev_key = _section_sort_key(prev_section)
+
+        if cur_key < prev_key:
+            if pidx is None:
+                pidx = _PageIndex(markdown)
+            page_suffix = pidx.format_page(matches[i].start())
+            result.warnings.append(
+                f"Section ordering: {cur_section} follows "
+                f"{prev_section} (backward jump){page_suffix}"
+            )
 
 
 # Regex to extract binary values from HTML table cells.
