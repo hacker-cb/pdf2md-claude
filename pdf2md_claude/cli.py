@@ -27,6 +27,7 @@ import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
+from pdf2md_claude.claude_api import ClaudeApi
 from pdf2md_claude.client import create_client
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter
 from pdf2md_claude.images import ImageMode
@@ -668,11 +669,14 @@ def _convert_single_pdf(
     """
     system_prompt = _resolve_rules(pdf_path, rules_path, rules_cache)
 
-    converter = PdfConverter(
+    api = ClaudeApi(
         client, model,
         use_cache=use_cache,
-        system_prompt=system_prompt,
         max_retries=max_retries,
+    )
+    converter = PdfConverter(
+        api, model,
+        system_prompt=system_prompt,
     )
     result = pipeline.convert(
         converter,
@@ -736,11 +740,14 @@ def _convert_one_document(
             pages_per_chunk, force=force,
         )
 
-        converter = PdfConverter(
+        api = ClaudeApi(
             client, model,
             use_cache=use_cache,
-            system_prompt=system_prompt,
             max_retries=max_retries,
+        )
+        converter = PdfConverter(
+            api, model,
+            system_prompt=system_prompt,
         )
         result = pipeline.convert(
             converter,
