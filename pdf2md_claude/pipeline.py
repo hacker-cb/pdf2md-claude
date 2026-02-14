@@ -1,15 +1,16 @@
 """Single-document conversion pipeline.
 
 Orchestrates the full flow for one PDF: work directory management,
-chunked conversion, deterministic merge, pluggable processing steps,
-and output writing.
+chunked conversion, deterministic merge, processing steps, and output
+writing.
 
-The pipeline uses a step-based architecture: after merging chunks,
-a configurable list of :class:`ProcessingStep` objects is executed
-in order.  Each step receives a shared :class:`ProcessingContext`
-and can modify the markdown content and/or append validation messages.
+The pipeline builds its processing step chain internally from
+configuration flags passed at construction time.  After merging
+chunks, the steps are executed in order; each step receives a shared
+:class:`ProcessingContext` and can modify the markdown content and/or
+append validation messages.
 
-Built-in steps:
+Built-in steps (always in this order, some conditionally included):
 
 - :class:`MergeContinuedTablesStep` — merges split tables.
 - :class:`ExtractImagesStep` — renders and injects images.
@@ -273,32 +274,68 @@ class ConversionPipeline:
     """Orchestrates the full single-document conversion pipeline.
 
     Created per document with the source PDF path and target output file.
-    Holds an ordered list of :class:`ProcessingStep` objects that are
-    executed after chunk merging.  Provides :meth:`run` as a unified
-    entry point supporting full API-based conversion (``from_step=None``)
-    or re-running from cached chunks (``from_step="merge"``, no API calls).
+    Processing steps are built internally from configuration flags.
+    Provides :meth:`run` as a unified entry point supporting full API-based
+    conversion (``from_step=None``) or re-running from cached chunks
+    (``from_step="merge"``, no API calls).
+
+    The step chain is always: tables → images → strip-ai → format → validate,
+    with some steps conditionally included based on flags.
 
     Usage::
 
-        steps = [
-            MergeContinuedTablesStep(),
-            ExtractImagesStep(image_mode=ImageMode.AUTO, render_dpi=600),
-            ValidateStep(),
-        ]
-        pipeline = ConversionPipeline(steps, pdf_path, output_file)
+        pipeline = ConversionPipeline(
+            pdf_path,
+            output_file,
+            image_mode=ImageMode.AUTO,
+            image_dpi=600,
+        )
         result = pipeline.run(converter, pages_per_chunk=10)
     """
 
     def __init__(
         self,
-        steps: list[ProcessingStep],
         pdf_path: Path,
         output_file: Path,
+        *,
+        image_mode: ImageMode = ImageMode.AUTO,
+        image_dpi: int | None = None,
+        no_images: bool = False,
+        strip_ai_descriptions: bool = False,
+        no_format: bool = False,
     ) -> None:
-        self._steps = steps
         self._pdf_path = pdf_path
         self._output_file = output_file
         self._work_dir = WorkDir(output_file.with_suffix(".staging"))
+        
+        # Step configuration
+        self._image_mode = image_mode
+        self._image_dpi = image_dpi
+        self._no_images = no_images
+        self._strip_ai_descriptions = strip_ai_descriptions
+        self._no_format = no_format
+        
+        # Build step chain
+        self._steps = self._build_steps()
+
+    def _build_steps(self) -> list[ProcessingStep]:
+        """Build the processing step chain from configuration flags.
+
+        Returns:
+            Ordered list of processing steps to execute after merge.
+        """
+        steps: list[ProcessingStep] = [MergeContinuedTablesStep()]
+        if not self._no_images:
+            steps.append(ExtractImagesStep(
+                image_mode=self._image_mode,
+                render_dpi=self._image_dpi,
+            ))
+        if self._strip_ai_descriptions:
+            steps.append(StripAIDescriptionsStep())
+        if not self._no_format:
+            steps.append(FormatMarkdownStep())
+        steps.append(ValidateStep())
+        return steps
 
     # -- public API --------------------------------------------------------
 

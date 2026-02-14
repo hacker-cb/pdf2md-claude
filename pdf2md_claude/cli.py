@@ -32,16 +32,7 @@ from pdf2md_claude.client import create_client
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
-from pdf2md_claude.formatter import FormatMarkdownStep
-from pdf2md_claude.pipeline import (
-    ConversionPipeline,
-    ExtractImagesStep,
-    MergeContinuedTablesStep,
-    ProcessingStep,
-    StripAIDescriptionsStep,
-    ValidateStep,
-    resolve_output,
-)
+from pdf2md_claude.pipeline import ConversionPipeline, resolve_output
 from pdf2md_claude.prompt import SYSTEM_PROMPT
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
 from pdf2md_claude.rules import (
@@ -473,22 +464,6 @@ def _resolve_file_paths(
     return resolved
 
 
-def _build_steps(args: argparse.Namespace) -> list[ProcessingStep]:
-    """Build the processing step chain from CLI args."""
-    steps: list[ProcessingStep] = [MergeContinuedTablesStep()]
-    if not args.no_images:
-        steps.append(ExtractImagesStep(
-            image_mode=ImageMode(args.image_mode),
-            render_dpi=args.image_dpi,
-        ))
-    if args.strip_ai_descriptions:
-        steps.append(StripAIDescriptionsStep())
-    if not args.no_format:
-        steps.append(FormatMarkdownStep())
-    steps.append(ValidateStep())
-    return steps
-
-
 
 def _resolve_rules(
     pdf_path: Path,
@@ -649,13 +624,17 @@ def _convert_one_document(
     output_dir: Path | None,
     model: ModelConfig,
     client: anthropic.Anthropic,
-    steps: list[ProcessingStep],
     pages_per_chunk: int,
     max_pages: int | None,
     force: bool,
     use_cache: bool,
     max_retries: int,
     system_prompt: str | None,
+    image_mode: ImageMode,
+    image_dpi: int | None,
+    no_images: bool,
+    strip_ai_descriptions: bool,
+    no_format: bool,
     from_step: str | None = None,
 ) -> _DocConvertResult:
     """Convert a single PDF: check staleness, build API objects, run pipeline.
@@ -668,7 +647,15 @@ def _convert_one_document(
     set_document_context(doc_name)
     try:
         output_file = resolve_output(pdf_path, output_dir)
-        pipeline = ConversionPipeline(steps, pdf_path, output_file)
+        pipeline = ConversionPipeline(
+            pdf_path,
+            output_file,
+            image_mode=image_mode,
+            image_dpi=image_dpi,
+            no_images=no_images,
+            strip_ai_descriptions=strip_ai_descriptions,
+            no_format=no_format,
+        )
 
         if not pipeline.needs_conversion(
             force=force or bool(from_step), model_id=model.model_id,
@@ -809,11 +796,11 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         return 1
 
     output_dir = args.output_dir.resolve() if args.output_dir else None
-    steps = _build_steps(args)
 
     # Model and chunking setup (always performed).
     model = MODELS[args.model]
     pages_per_chunk = args.pages_per_chunk
+    image_mode = ImageMode(args.image_mode)
 
     # Validate pages_per_chunk against the API hard limit.
     if pages_per_chunk < 1:
@@ -893,13 +880,17 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                         output_dir=output_dir,
                         model=model,
                         client=client,
-                        steps=steps,
                         pages_per_chunk=pages_per_chunk,
                         max_pages=args.max_pages,
                         force=args.force,
                         use_cache=args.cache,
                         max_retries=args.retries,
                         system_prompt=system_prompts[pdf_path],
+                        image_mode=image_mode,
+                        image_dpi=args.image_dpi,
+                        no_images=args.no_images,
+                        strip_ai_descriptions=args.strip_ai_descriptions,
+                        no_format=args.no_format,
                         from_step=args.from_step,
                     ): pdf_path
                     for pdf_path in pdf_paths
@@ -922,13 +913,17 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                     output_dir=output_dir,
                     model=model,
                     client=client,
-                    steps=steps,
                     pages_per_chunk=pages_per_chunk,
                     max_pages=args.max_pages,
                     force=args.force,
                     use_cache=args.cache,
                     max_retries=args.retries,
                     system_prompt=system_prompts[pdf_path],
+                    image_mode=image_mode,
+                    image_dpi=args.image_dpi,
+                    no_images=args.no_images,
+                    strip_ai_descriptions=args.strip_ai_descriptions,
+                    no_format=args.no_format,
                     from_step=args.from_step,
                 )
                 if result.stats is not None:

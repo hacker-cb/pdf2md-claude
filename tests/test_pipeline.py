@@ -85,12 +85,15 @@ def _make_pipeline(
     pdf_path: Path = _DUMMY_PDF,
     output_file: Path = _DUMMY_OUTPUT,
 ) -> ConversionPipeline:
-    """Create a ConversionPipeline with dummy paths for testing."""
-    return ConversionPipeline(
-        steps=steps or [],
-        pdf_path=pdf_path,
-        output_file=output_file,
-    )
+    """Create a ConversionPipeline with dummy paths for testing.
+    
+    If steps are provided, they override the default step chain by directly
+    setting pipeline._steps after construction.
+    """
+    pipeline = ConversionPipeline(pdf_path, output_file)
+    if steps is not None:
+        pipeline._steps = steps
+    return pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +218,7 @@ class TestRunSteps:
     """Tests for ConversionPipeline._run_steps()."""
 
     def test_empty_steps(self):
-        pipeline = _make_pipeline()
+        pipeline = _make_pipeline(steps=[])
         ctx = _make_ctx("content")
         pipeline._run_steps(ctx)
         assert ctx.markdown == "content"
@@ -438,7 +441,8 @@ class TestResolvePagesPerChunk:
     def test_no_workdir_returns_requested(self, tmp_path: Path):
         """When no workdir exists, returns the requested value."""
         output_file = tmp_path / "doc.md"
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 10
 
     def test_manifest_matches_returns_silently(self, tmp_path: Path):
@@ -446,7 +450,8 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=15)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(15) == 15
 
     def test_manifest_mismatch_returns_manifest_value(self, tmp_path: Path):
@@ -454,7 +459,8 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 20
 
     def test_manifest_mismatch_logs_warning(self, tmp_path: Path, caplog):
@@ -462,7 +468,8 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         import logging
         with caplog.at_level(logging.WARNING, logger="pipeline"):
             pipeline.resolve_pages_per_chunk(10)
@@ -479,7 +486,8 @@ class TestResolvePagesPerChunk:
         staging_dir.mkdir()
         (staging_dir / "manifest.json").write_text("bad json", encoding="utf-8")
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 10
 
     def test_force_bypasses_manifest(self, tmp_path: Path):
@@ -487,7 +495,8 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10, force=True) == 10
 
     def test_force_no_warning(self, tmp_path: Path, caplog):
@@ -495,7 +504,8 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         import logging
         with caplog.at_level(logging.WARNING, logger="pipeline"):
             pipeline.resolve_pages_per_chunk(10, force=True)
@@ -518,7 +528,8 @@ class TestRunFromStepValidation:
         from unittest.mock import Mock
 
         output_file = tmp_path / "doc.md"
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         
         # Mock converter (not used for this test, but required by run signature)
         mock_converter = Mock()
@@ -531,7 +542,8 @@ class TestRunFromStepValidation:
         from unittest.mock import Mock
 
         output_file = tmp_path / "doc.md"
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         # No staging dir → RuntimeError proves it passed the ValueError check.
         with pytest.raises(RuntimeError, match="Staging directory not found"):
             pipeline.run(Mock(), pages_per_chunk=10, from_step="merge")
@@ -548,7 +560,8 @@ class TestRunFromStepValidation:
             chunks=[], stats=Mock(), cached_chunks=0, fresh_chunks=0,
         )
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(_DUMMY_PDF, output_file)
+        pipeline._steps = []
         result = pipeline.run(mock_converter, pages_per_chunk=10, from_step=None)
         assert result is not None
         mock_converter.convert.assert_called_once()
