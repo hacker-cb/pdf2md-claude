@@ -148,30 +148,33 @@ class TestValidateArgs:
     """Argument parsing for the ``validate`` subcommand."""
 
     def test_minimal(self):
-        args = _parse(["validate", "output.md"])
+        args = _parse(["validate", "doc.pdf"])
         assert args.command == "validate"
-        assert len(args.files) == 1
-        assert str(args.files[0]) == "output.md"
+        assert len(args.pdfs) == 1
+        assert str(args.pdfs[0]) == "doc.pdf"
 
-    def test_multiple_files(self):
-        args = _parse(["validate", "a.md", "b.md", "c.md"])
-        assert len(args.files) == 3
+    def test_multiple_pdfs(self):
+        args = _parse(["validate", "a.pdf", "b.pdf", "c.pdf"])
+        assert len(args.pdfs) == 3
 
     def test_verbose(self):
-        args = _parse(["validate", "output.md", "-v"])
+        args = _parse(["validate", "doc.pdf", "-v"])
         assert args.verbose is True
 
-    def test_requires_at_least_one_file(self):
+    def test_output_dir(self):
+        args = _parse(["validate", "doc.pdf", "-o", "/tmp/out"])
+        assert str(args.output_dir) == "/tmp/out"
+
+    def test_requires_at_least_one_pdf(self):
         _parse_fails(["validate"])
 
     def test_rejects_convert_flags(self):
-        """validate only accepts -v/--verbose, nothing else."""
-        _parse_fails(["validate", "out.md", "--force"])
-        _parse_fails(["validate", "out.md", "--model", "sonnet"])
-        _parse_fails(["validate", "out.md", "--cache"])
-        _parse_fails(["validate", "out.md", "--no-images"])
-        _parse_fails(["validate", "out.md", "-o", "/tmp"])
-        _parse_fails(["validate", "out.md", "--rules", "r.txt"])
+        """validate only accepts -v/--verbose and -o/--output-dir."""
+        _parse_fails(["validate", "doc.pdf", "--force"])
+        _parse_fails(["validate", "doc.pdf", "--model", "sonnet"])
+        _parse_fails(["validate", "doc.pdf", "--cache"])
+        _parse_fails(["validate", "doc.pdf", "--no-images"])
+        _parse_fails(["validate", "doc.pdf", "--rules", "r.txt"])
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +242,7 @@ class TestTopLevel:
     def test_old_flat_flags_rejected(self):
         """Old-style flags (--remerge, --validate) no longer work."""
         _parse_fails(["--remerge", "doc.pdf"])
-        _parse_fails(["--validate", "output.md"])
+        _parse_fails(["--validate", "doc.pdf"])
         _parse_fails(["--show-prompt"])
         _parse_fails(["--init-rules"])
 
