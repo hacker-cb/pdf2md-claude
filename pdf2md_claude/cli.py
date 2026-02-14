@@ -483,6 +483,7 @@ def _resolve_file_paths(
             )
             return None
         resolved.append(rp)
+    resolved.sort(key=lambda p: p.name)
     return resolved
 
 
