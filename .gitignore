@@ -12,4 +12,8 @@ build/
 .pytest_cache/
 .DS_Store
 *.DS_Store
-samples/**/*.chunks/
+
+# Samples
+samples/**/*.staging/
+samples/**/*.images/
+samples/**/*.md

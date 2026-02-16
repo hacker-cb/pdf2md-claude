@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 import time
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
+from pdf2md_claude.claude_api import ClaudeApi
 from pdf2md_claude.client import create_client
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter
 from pdf2md_claude.images import ImageMode
@@ -153,6 +155,9 @@ def _setup_logging(verbose: bool) -> None:
 # Argument parser
 # ---------------------------------------------------------------------------
 
+_JOBS_AUTO = 0
+"""Sentinel for ``-j`` without a number (auto = one worker per document)."""
+
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser with subcommands."""
@@ -178,9 +183,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "-j", "--jobs",
         type=int,
         default=1,
+        nargs="?",
+        const=_JOBS_AUTO,
         metavar="N",
-        help="Number of documents to process in parallel (default: 1). "
-             "Each document's chunks are still processed sequentially.",
+        help="Number of documents to process in parallel. "
+             "'-j' alone = one worker per document; "
+             "'-j N' = exactly N workers (default: 1, sequential).",
     )
 
     image_parent = argparse.ArgumentParser(add_help=False)
@@ -363,7 +371,7 @@ Examples:
         nargs="+",
         type=Path,
         help="PDF file(s) to re-merge "
-             "(must have existing .chunks/ directories)",
+             "(must have existing .staging/ directories)",
     )
 
     # -- validate --------------------------------------------------------------
@@ -475,6 +483,7 @@ def _resolve_file_paths(
             )
             return None
         resolved.append(rp)
+    resolved.sort(key=lambda p: p.name)
     return resolved
 
 
@@ -561,6 +570,9 @@ def _validate_files(
     validated = 0
     failed = 0
 
+    # category -> list of (doc_name, count)
+    category_summary: dict[str, list[tuple[str, int]]] = defaultdict(list)
+
     for pdf_path in pdf_paths:
         doc_name = pdf_path.stem
         md_path = resolve_output(pdf_path, output_dir)
@@ -598,12 +610,32 @@ def _validate_files(
         else:
             _log.info("  ✓ OK")
 
+        # Accumulate per-category counts for the grouped summary.
+        cat_counts = Counter(cat for cat, _ in (*result.errors, *result.warnings))
+        for cat, cnt in cat_counts.items():
+            category_summary[cat].append((doc_name, cnt))
+
         total_errors += len(result.errors)
         total_warnings += len(result.warnings)
         validated += 1
 
+    # Print grouped summary before the totals line.
     _log.info("")
     _log.info(_SUMMARY_SEP)
+    if category_summary:
+        _log.info("Problem summary by category:")
+        _log.info("")
+        for cat, file_counts in sorted(category_summary.items()):
+            total_cat = sum(cnt for _, cnt in file_counts)
+            _log.info(
+                "  %s (%d issue(s) in %d file(s)):",
+                cat, total_cat, len(file_counts),
+            )
+            for doc_name, cnt in file_counts:
+                _log.info("    %-40s %d", doc_name, cnt)
+            _log.info("")
+        _log.info(_SUMMARY_SEP)
+
     parts = [f"{validated} validated"]
     if failed:
         parts.append(f"{failed} failed")
@@ -638,11 +670,14 @@ def _convert_single_pdf(
     """
     system_prompt = _resolve_rules(pdf_path, rules_path, rules_cache)
 
-    converter = PdfConverter(
+    api = ClaudeApi(
         client, model,
         use_cache=use_cache,
-        system_prompt=system_prompt,
         max_retries=max_retries,
+    )
+    converter = PdfConverter(
+        api, model,
+        system_prompt=system_prompt,
     )
     result = pipeline.convert(
         converter,
@@ -706,11 +741,14 @@ def _convert_one_document(
             pages_per_chunk, force=force,
         )
 
-        converter = PdfConverter(
+        api = ClaudeApi(
             client, model,
             use_cache=use_cache,
-            system_prompt=system_prompt,
             max_retries=max_retries,
+        )
+        converter = PdfConverter(
+            api, model,
+            system_prompt=system_prompt,
         )
         result = pipeline.convert(
             converter,
@@ -923,9 +961,9 @@ def _cmd_convert(args: argparse.Namespace) -> int:
             output_dir.mkdir(parents=True, exist_ok=True)
 
         jobs: int = args.jobs
-        if jobs < 1:
-            _log.error("--jobs must be at least 1")
-            return 1
+        if jobs <= _JOBS_AUTO:
+            # -j without a number (or -j 0): auto = one worker per document.
+            jobs = len(pdf_paths)
 
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []

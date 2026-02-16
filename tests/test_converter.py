@@ -1,11 +1,8 @@
 """Unit tests for converter, merger, validator, and prompts."""
 
-import httpx
 import pytest
 
-import anthropic
-
-from pdf2md_claude.converter import _get_context_tail, _is_retryable, _remap_page_markers
+from pdf2md_claude.converter import _get_context_tail, _remap_page_markers
 from pdf2md_claude.markers import PAGE_BEGIN, PAGE_END
 from pdf2md_claude.merger import merge_chunks
 from pdf2md_claude.prompt import (
@@ -113,7 +110,7 @@ class TestCheckPageMarkers:
         """Empty input (no markers) should produce an error."""
         r = ValidationResult()
         _check_page_markers("No markers here", r)
-        assert any("No page markers" in e for e in r.errors)
+        assert any("No page markers" in e for e in r.error_messages)
 
     def test_monotonic_no_errors(self):
         """Correct monotonic sequence should produce no errors."""
@@ -131,7 +128,7 @@ class TestCheckPageMarkers:
         r = ValidationResult()
         md = "<!-- PDF_PAGE_BEGIN 15 -->\n<!-- PDF_PAGE_BEGIN 4 -->"
         _check_page_markers(md, r)
-        assert any("not monotonic" in e for e in r.errors)
+        assert any("not monotonic" in e for e in r.error_messages)
 
     def test_all_jumps_reported(self):
         """Multiple backward jumps should ALL be reported."""
@@ -143,7 +140,7 @@ class TestCheckPageMarkers:
             "<!-- PDF_PAGE_BEGIN 3 -->"
         )
         _check_page_markers(md, r)
-        mono_errors = [e for e in r.errors if "not monotonic" in e]
+        mono_errors = [e for e in r.error_messages if "not monotonic" in e]
         assert len(mono_errors) == 2
 
     def test_gap_is_error(self):
@@ -151,7 +148,7 @@ class TestCheckPageMarkers:
         r = ValidationResult()
         md = "<!-- PDF_PAGE_BEGIN 14 -->\n<!-- PDF_PAGE_BEGIN 16 -->"
         _check_page_markers(md, r)
-        assert any("Missing page marker" in e for e in r.errors)
+        assert any("Missing page marker" in e for e in r.error_messages)
 
     def test_consecutive_no_gap_error(self):
         """Consecutive pages should not produce a gap error."""
@@ -162,7 +159,7 @@ class TestCheckPageMarkers:
             "<!-- PDF_PAGE_BEGIN 16 -->"
         )
         _check_page_markers(md, r)
-        gap_errors = [e for e in r.errors if "Missing" in e]
+        gap_errors = [e for e in r.error_messages if "Missing" in e]
         assert len(gap_errors) == 0
 
 
@@ -179,7 +176,7 @@ class TestCheckPageEndMarkers:
         r = ValidationResult()
         md = "<!-- PDF_PAGE_BEGIN 1 -->\nContent"
         _check_page_end_markers(md, r)
-        assert any("No PDF_PAGE_END" in e for e in r.errors)
+        assert any("No PDF_PAGE_END" in e for e in r.error_messages)
 
     def test_matching_pairs_no_errors(self):
         """Matched begin/end pairs should produce no errors."""
@@ -199,7 +196,7 @@ class TestCheckPageEndMarkers:
             "<!-- PDF_PAGE_END 99 -->"
         )
         _check_page_end_markers(md, r)
-        assert any("PDF_PAGE_END 99 has no matching" in e for e in r.errors)
+        assert any("PDF_PAGE_END 99 has no matching" in e for e in r.error_messages)
 
     def test_missing_end_is_error(self):
         """Begin marker without matching end should error."""
@@ -209,7 +206,7 @@ class TestCheckPageEndMarkers:
             "<!-- PDF_PAGE_BEGIN 2 -->\nMore"
         )
         _check_page_end_markers(md, r)
-        assert any("PDF_PAGE_BEGIN 2 has no matching" in e for e in r.errors)
+        assert any("PDF_PAGE_BEGIN 2 has no matching" in e for e in r.error_messages)
 
     def test_no_markers_at_all_no_warn(self):
         """No markers at all should produce no warnings."""
@@ -239,7 +236,7 @@ class TestCheckBinarySequences:
             "</table>"
         )
         _check_binary_sequences(html, r)
-        assert any("Duplicate binary" in w for w in r.warnings)
+        assert any("Duplicate binary" in w for w in r.warning_messages)
 
     def test_non_monotonic_binary_detected(self):
         """Backward jump in binary values should be flagged."""
@@ -252,7 +249,7 @@ class TestCheckBinarySequences:
             "</table>"
         )
         _check_binary_sequences(html, r)
-        assert any("not monotonic" in w for w in r.warnings)
+        assert any("not monotonic" in w for w in r.warning_messages)
 
     def test_correct_sequence_no_warnings(self):
         """Monotonically increasing binary sequence should be clean."""
@@ -503,120 +500,3 @@ class TestMergeChunks:
         result = merge_chunks(["Hello", "World"])
         assert "Hello" in result
         assert "World" in result
-
-
-# ---------------------------------------------------------------------------
-# 7. _is_retryable (transient error classification)
-# ---------------------------------------------------------------------------
-
-
-class TestIsRetryable:
-    """Tests for _is_retryable() in converter.py."""
-
-    # -- Retryable (transient) errors --------------------------------------
-
-    def test_api_connection_error_retryable(self):
-        """APIConnectionError (network failure) should be retryable."""
-        exc = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
-        assert _is_retryable(exc) is True
-
-    def test_api_timeout_error_retryable(self):
-        """APITimeoutError (request timeout) should be retryable."""
-        exc = anthropic.APITimeoutError(request=httpx.Request("POST", "https://api.anthropic.com"))
-        assert _is_retryable(exc) is True
-
-    def test_rate_limit_error_retryable(self):
-        """RateLimitError (429) should be retryable."""
-        resp = httpx.Response(429, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.RateLimitError(response=resp, body=None, message="rate limited")
-        assert _is_retryable(exc) is True
-
-    def test_internal_server_error_retryable(self):
-        """InternalServerError (500) should be retryable."""
-        resp = httpx.Response(500, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.InternalServerError(response=resp, body=None, message="server error")
-        assert _is_retryable(exc) is True
-
-    def test_overloaded_529_retryable(self):
-        """Overloaded (529) should be retryable."""
-        resp = httpx.Response(529, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.APIStatusError(response=resp, body=None, message="overloaded")
-        assert _is_retryable(exc) is True
-
-    def test_status_502_retryable(self):
-        """502 Bad Gateway should be retryable."""
-        resp = httpx.Response(502, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.APIStatusError(response=resp, body=None, message="bad gateway")
-        assert _is_retryable(exc) is True
-
-    def test_status_503_retryable(self):
-        """503 Service Unavailable should be retryable."""
-        resp = httpx.Response(503, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.APIStatusError(response=resp, body=None, message="unavailable")
-        assert _is_retryable(exc) is True
-
-    def test_remote_protocol_error_retryable(self):
-        """RemoteProtocolError (by class name) should be retryable."""
-        # Simulate httpcore.RemoteProtocolError without importing httpcore.
-        class RemoteProtocolError(Exception):
-            pass
-
-        exc = RemoteProtocolError("peer closed connection")
-        assert _is_retryable(exc) is True
-
-    def test_read_error_retryable(self):
-        """ReadError (by class name) should be retryable."""
-        class ReadError(Exception):
-            pass
-
-        exc = ReadError("read failed")
-        assert _is_retryable(exc) is True
-
-    def test_protocol_error_retryable(self):
-        """ProtocolError (by class name) should be retryable."""
-        class ProtocolError(Exception):
-            pass
-
-        exc = ProtocolError("protocol violation")
-        assert _is_retryable(exc) is True
-
-    # -- Non-retryable (permanent) errors ----------------------------------
-
-    def test_bad_request_not_retryable(self):
-        """BadRequestError (400, includes content filtering) should NOT be retryable."""
-        resp = httpx.Response(400, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.BadRequestError(response=resp, body=None, message="bad request")
-        assert _is_retryable(exc) is False
-
-    def test_auth_error_not_retryable(self):
-        """AuthenticationError (401) should NOT be retryable."""
-        resp = httpx.Response(401, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.AuthenticationError(response=resp, body=None, message="unauthorized")
-        assert _is_retryable(exc) is False
-
-    def test_permission_denied_not_retryable(self):
-        """PermissionDeniedError (403) should NOT be retryable."""
-        resp = httpx.Response(403, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.PermissionDeniedError(response=resp, body=None, message="forbidden")
-        assert _is_retryable(exc) is False
-
-    def test_not_found_not_retryable(self):
-        """NotFoundError (404) should NOT be retryable."""
-        resp = httpx.Response(404, request=httpx.Request("POST", "https://api.anthropic.com"))
-        exc = anthropic.NotFoundError(response=resp, body=None, message="not found")
-        assert _is_retryable(exc) is False
-
-    def test_runtime_error_not_retryable(self):
-        """RuntimeError (max_tokens truncation) should NOT be retryable."""
-        exc = RuntimeError("Chunk pages 1-10 truncated")
-        assert _is_retryable(exc) is False
-
-    def test_generic_exception_not_retryable(self):
-        """Generic Exception should NOT be retryable."""
-        exc = Exception("something unexpected")
-        assert _is_retryable(exc) is False
-
-    def test_value_error_not_retryable(self):
-        """ValueError should NOT be retryable."""
-        exc = ValueError("invalid argument")
-        assert _is_retryable(exc) is False

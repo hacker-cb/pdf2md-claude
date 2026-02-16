@@ -31,7 +31,7 @@ class TestDuplicateHeadings:
     def _dup_warnings(self, result: ValidationResult) -> list[str]:
         """Extract all duplicate-heading warnings."""
         return [
-            w for w in result.warnings
+            w for w in result.warning_messages
             if ("Section " in w or "Duplicate" in w)
             and "Section ordering" not in w
         ]
@@ -147,7 +147,7 @@ class TestSectionContinuity:
 
     def _continuity_warnings(self, result: ValidationResult) -> list[str]:
         """Extract all section-ordering warnings."""
-        return [w for w in result.warnings if "Section ordering" in w]
+        return [w for w in result.warning_messages if "Section ordering" in w]
 
     def test_no_backward_jumps(self):
         """Clean sequential sections should produce no warnings."""
@@ -294,7 +294,7 @@ class TestSkippedPages:
             "<!-- PDF_PAGE_BEGIN 3 -->\nB\n<!-- PDF_PAGE_END 3 -->\n"
         )
         r = validate_output(md)
-        assert not any("Missing page marker" in e for e in r.errors)
+        assert not any("Missing page marker" in e for e in r.error_messages)
 
     def test_multiple_skipped_pages(self):
         """Multiple consecutive skipped pages are all counted."""
@@ -489,7 +489,7 @@ class TestPageFidelity:
         })
         result = ValidationResult()
         check_page_fidelity(text_pdf, md, result)
-        fidelity_warnings = [w for w in result.warnings if "fidelity" in w.lower()]
+        fidelity_warnings = [w for w in result.warning_messages if "fidelity" in w.lower()]
         assert not fidelity_warnings
 
     def test_fabricated_content_detected(self, text_pdf):
@@ -520,10 +520,10 @@ class TestPageFidelity:
         result = ValidationResult()
         check_page_fidelity(text_pdf, md, result)
         # Summary line contains "fidelity".
-        fidelity_summary = [w for w in result.warnings if "fidelity" in w.lower()]
+        fidelity_summary = [w for w in result.warning_messages if "fidelity" in w.lower()]
         assert len(fidelity_summary) >= 1
         # Detail lines contain page numbers (all fidelity warnings together).
-        all_fidelity = [w for w in result.warnings
+        all_fidelity = [w for w in result.warning_messages
                         if "fidelity" in w.lower() or "markdown words" in w.lower()]
         # Page 1 should be flagged.
         assert any("Page 1" in w for w in all_fidelity)
@@ -552,7 +552,7 @@ class TestPageFidelity:
         )
         result = ValidationResult()
         check_page_fidelity(text_pdf, md, result)
-        fidelity_warnings = [w for w in result.warnings if "fidelity" in w.lower()]
+        fidelity_warnings = [w for w in result.warning_messages if "fidelity" in w.lower()]
         assert not fidelity_warnings
 
     def test_short_pages_ignored(self, text_pdf):
@@ -564,7 +564,7 @@ class TestPageFidelity:
         })
         result = ValidationResult()
         check_page_fidelity(text_pdf, md, result)
-        fidelity_warnings = [w for w in result.warnings if "fidelity" in w.lower()]
+        fidelity_warnings = [w for w in result.warning_messages if "fidelity" in w.lower()]
         assert not fidelity_warnings
 
     def test_missing_pdf_no_crash(self, tmp_path):
@@ -574,8 +574,8 @@ class TestPageFidelity:
                              "without skipping.\n"})
         result = ValidationResult()
         check_page_fidelity(tmp_path / "nonexistent.pdf", md, result)
-        assert not result.warnings
-        assert not result.errors
+        assert not result.warning_messages
+        assert not result.error_messages
 
     def test_blank_pdf_pages_ignored(self, sample_pdf):
         """Blank PDF pages (no extractable text) should not trigger warnings."""
@@ -590,7 +590,7 @@ class TestPageFidelity:
         result = ValidationResult()
         check_page_fidelity(sample_pdf, md, result)
         # Blank PDF pages have < 5 significant words, so they're skipped.
-        fidelity_warnings = [w for w in result.warnings if "fidelity" in w.lower()]
+        fidelity_warnings = [w for w in result.warning_messages if "fidelity" in w.lower()]
         assert not fidelity_warnings
 
 
@@ -682,7 +682,7 @@ class TestHeadingSequence:
 
     def _gap_warnings(self, result: ValidationResult) -> list[str]:
         """Extract all section-gap warnings."""
-        return [w for w in result.warnings if "Section gap" in w]
+        return [w for w in result.warning_messages if "Section gap" in w]
 
     def test_no_gap(self):
         md = _wrap_pages(
@@ -698,7 +698,7 @@ class TestHeadingSequence:
             start=1, end=2,
         )
         r = validate_output(md)
-        assert any("Section gap" in w for w in r.warnings)
+        assert any("Section gap" in w for w in r.warning_messages)
 
     def test_subsection_gap_detected(self):
         """Gap in subsections: 3.1 -> 3.3 missing 3.2."""
@@ -790,12 +790,12 @@ class TestPageMarkers:
             "<!-- PDF_PAGE_BEGIN 2 -->\nMore\n<!-- PDF_PAGE_END 2 -->\n"
         )
         r = validate_output(md)
-        assert not r.errors or not any("page marker" in e.lower() for e in r.errors)
+        assert not r.error_messages or not any("page marker" in e.lower() for e in r.error_messages)
 
     def test_missing_markers(self):
         md = "Just text, no markers"
         r = validate_output(md)
-        assert any("No page markers" in e for e in r.errors)
+        assert any("No page markers" in e for e in r.error_messages)
 
     def test_gap_in_markers(self):
         md = (
@@ -803,7 +803,7 @@ class TestPageMarkers:
             "<!-- PDF_PAGE_BEGIN 3 -->\nB\n<!-- PDF_PAGE_END 3 -->\n"
         )
         r = validate_output(md)
-        assert any("Missing page marker" in e for e in r.errors)
+        assert any("Missing page marker" in e for e in r.error_messages)
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +816,7 @@ class TestFabricationDetection:
     def test_clean_text(self):
         md = _wrap_pages("## 1 Scope\n\nNormal content.\n", start=1, end=1)
         r = validate_output(md)
-        assert not any("fabricat" in e.lower() for e in r.errors)
+        assert not any("fabricat" in e.lower() for e in r.error_messages)
 
     def test_summary_substitution(self):
         md = _wrap_pages(
@@ -824,7 +824,7 @@ class TestFabricationDetection:
             start=1, end=1,
         )
         r = validate_output(md)
-        assert any("fabricat" in e.lower() for e in r.errors)
+        assert any("fabricat" in e.lower() for e in r.error_messages)
 
     def test_omission_note(self):
         md = _wrap_pages(
@@ -832,7 +832,7 @@ class TestFabricationDetection:
             start=1, end=1,
         )
         r = validate_output(md)
-        assert any("fabricat" in e.lower() for e in r.errors)
+        assert any("fabricat" in e.lower() for e in r.error_messages)
 
 
 # ---------------------------------------------------------------------------
@@ -844,7 +844,7 @@ class TestMissingFigures:
 
     def _figure_warnings(self, result: ValidationResult) -> list[str]:
         """Extract all figure-related warnings."""
-        return [w for w in result.warnings if "Figure" in w]
+        return [w for w in result.warning_messages if "Figure" in w]
 
     def test_no_warnings_when_all_defined(self):
         """Referenced figures that have bold captions should not warn."""
@@ -983,7 +983,7 @@ class TestImageBlockPairing:
     """Tests for IMAGE_BEGIN/IMAGE_END pairing validation."""
 
     def _image_errors(self, result: ValidationResult) -> list[str]:
-        return [e for e in result.errors if "IMAGE" in e]
+        return [e for e in result.error_messages if "IMAGE" in e]
 
     def _image_info(self, result: ValidationResult) -> list[str]:
         return [i for i in result.info if "Image block" in i]
@@ -1099,7 +1099,7 @@ class TestPageFidelityWithAIDescriptions(TestPageFidelity):
         })
         result = ValidationResult()
         check_page_fidelity(text_pdf, md, result)
-        fidelity_warnings = [w for w in result.warnings if "fidelity" in w.lower()]
+        fidelity_warnings = [w for w in result.warning_messages if "fidelity" in w.lower()]
         assert not fidelity_warnings
 
 
@@ -1112,7 +1112,7 @@ class TestTableColumnConsistency:
 
     def _col_warnings(self, result: ValidationResult) -> list[str]:
         """Extract column-count mismatch warnings."""
-        return [w for w in result.warnings if "columns" in w]
+        return [w for w in result.warning_messages if "columns" in w]
 
     def test_valid_simple_table(self):
         """A simple table with uniform rows should produce no warnings."""
@@ -1162,10 +1162,14 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "row 0" in warnings[0]
-        assert "3 columns" in warnings[0]
-        assert "expected 4" in warnings[0]
+        # Header-vs-body diagnostic + per-row mismatch for the header row.
+        # Deterministic mode (prefer max) → expected=4, so the header
+        # row (3 cols) is the outlier.
+        assert len(warnings) == 2
+        assert "header rows define 3 columns" in warnings[0]
+        assert "body rows have 4 columns" in warnings[0]
+        assert "row 0" in warnings[1]
+        assert "3 columns" in warnings[1]
 
     def test_separator_row_wrong_count(self):
         """Empty separator row with fewer cells than data rows should warn."""
@@ -1181,6 +1185,8 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
+        # Header mode (4) matches expected (4), so no header-vs-body
+        # diagnostic — only the per-row mismatch for the separator row.
         assert len(warnings) == 1
         assert "row 1" in warnings[0]  # 0=header, 1=separator
         assert "3 columns" in warnings[0]
@@ -1198,8 +1204,8 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "Table 6" in warnings[0]
+        assert len(warnings) >= 1
+        assert any("Table 6" in w for w in warnings)
 
     def test_multiple_tables_only_broken_warned(self):
         """Only the broken table should produce warnings."""
@@ -1218,8 +1224,9 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "Table 2" in warnings[0]
+        assert len(warnings) >= 1
+        assert all("Table 2" in w for w in warnings)
+        assert not any("Table 1" in w for w in warnings)
 
     def test_rowspan_and_colspan_combined(self):
         """A cell with both rowspan and colspan should be handled correctly."""
@@ -1251,8 +1258,8 @@ class TestTableColumnConsistency:
         )
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "HTML table" in warnings[0]
+        assert len(warnings) >= 1
+        assert any("HTML table" in w for w in warnings)
 
     def test_page_number_in_warning(self):
         """Warning message should include the page number."""
@@ -1267,9 +1274,9 @@ class TestTableColumnConsistency:
         })
         r = validate_output(md)
         warnings = self._col_warnings(r)
-        assert len(warnings) == 1
-        assert "page 5" in warnings[0]
-        assert "Table 10" in warnings[0]
+        assert len(warnings) >= 1
+        assert any("page 5" in w for w in warnings)
+        assert any("Table 10" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -1317,7 +1324,7 @@ class TestMissingTablesPageNumbers:
             7: "Also see Table 5 again.\n",
         })
         r = validate_output(md)
-        table_warnings = [w for w in r.warnings if "Table 5" in w]
+        table_warnings = [w for w in r.warning_messages if "Table 5" in w]
         assert len(table_warnings) == 1
         assert "page 3" in table_warnings[0] or "page 7" in table_warnings[0]
         # Both pages should be mentioned.
@@ -1329,7 +1336,7 @@ class TestMissingTablesPageNumbers:
         # No page markers → validate_output will error on missing markers,
         # but the table warning should still be produced (without page info).
         r = validate_output(md)
-        table_warnings = [w for w in r.warnings if "Table 99" in w]
+        table_warnings = [w for w in r.warning_messages if "Table 99" in w]
         assert len(table_warnings) == 1
         assert "not defined" in table_warnings[0]
 
@@ -1346,7 +1353,7 @@ class TestMissingFiguresPageNumbers:
             4: "See Figure 8 for the diagram.\n",
         })
         r = validate_output(md)
-        fig_warnings = [w for w in r.warnings if "Figure 8" in w]
+        fig_warnings = [w for w in r.warning_messages if "Figure 8" in w]
         assert len(fig_warnings) == 1
         assert "page 4" in fig_warnings[0]
 
@@ -1363,7 +1370,7 @@ class TestFabricationPageNumbers:
             12: "presented as summary references for the commands\n",
         })
         r = validate_output(md)
-        fab_errors = [e for e in r.errors if "fabricat" in e.lower()]
+        fab_errors = [e for e in r.error_messages if "fabricat" in e.lower()]
         assert len(fab_errors) >= 1
         assert "page 12" in fab_errors[0]
 
@@ -1381,7 +1388,7 @@ class TestHeadingSequencePageNumbers:
             5: "## 3 Definitions\n",
         })
         r = validate_output(md)
-        gap_warnings = [w for w in r.warnings if "Section gap" in w]
+        gap_warnings = [w for w in r.warning_messages if "Section gap" in w]
         assert len(gap_warnings) == 1
         assert "page 5" in gap_warnings[0]
 
@@ -1406,7 +1413,7 @@ class TestBinarySequencesPageNumbers:
             ),
         })
         r = validate_output(md)
-        bin_warnings = [w for w in r.warnings if "binary" in w.lower()]
+        bin_warnings = [w for w in r.warning_messages if "binary" in w.lower()]
         assert len(bin_warnings) >= 1
         assert "page 9" in bin_warnings[0]
         assert "Table 3" in bin_warnings[0]

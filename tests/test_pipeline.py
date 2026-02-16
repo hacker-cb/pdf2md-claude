@@ -109,7 +109,7 @@ class TestProcessingContext:
         """Each context gets its own ValidationResult instance."""
         ctx1 = _make_ctx()
         ctx2 = _make_ctx()
-        ctx1.validation.errors.append("err")
+        ctx1.validation.errors.append(("test", "err"))
         assert ctx2.validation.ok
 
 
@@ -207,12 +207,12 @@ class TestRunSteps:
                 return "warn"
 
             def run(self, ctx: ProcessingContext) -> None:
-                ctx.validation.warnings.append("test warning")
+                ctx.validation.warnings.append(("test", "test warning"))
 
         pipeline = _make_pipeline(steps=[WarnStep()])
         ctx = _make_ctx()
         pipeline._run_steps(ctx)
-        assert "test warning" in ctx.validation.warnings
+        assert "test warning" in ctx.validation.warning_messages
 
     def test_step_exception_propagates(self):
         pipeline = _make_pipeline(steps=[FailingStep()])
@@ -265,6 +265,9 @@ class TestProcess:
     def test_process_merges_runs_steps_and_writes(self, tmp_path):
         output_file = tmp_path / "result.md"
         step = RecordingStep(label="transform", suffix="\n## Added by step")
+        
+        # Pipeline derives staging dir from output_file -> result.staging
+        (tmp_path / "result.staging" / "pass1").mkdir(parents=True)
         pipeline = _make_pipeline(steps=[step], output_file=output_file)
 
         ctx, step_timings = pipeline._process(
@@ -375,9 +378,9 @@ class TestStripAIDescriptionsStep:
 # ---------------------------------------------------------------------------
 
 
-def _write_manifest(chunks_dir: Path, pages_per_chunk: int = 20) -> None:
-    """Write a minimal manifest.json into a .chunks/ directory."""
-    chunks_dir.mkdir(parents=True, exist_ok=True)
+def _write_manifest(staging_dir: Path, pages_per_chunk: int = 20) -> None:
+    """Write a minimal manifest.json into a .staging/ directory."""
+    staging_dir.mkdir(parents=True, exist_ok=True)
     manifest = Manifest(
         pdf_mtime=1707321600.0,
         pdf_size=4096,
@@ -388,7 +391,7 @@ def _write_manifest(chunks_dir: Path, pages_per_chunk: int = 20) -> None:
         num_chunks=2,
     )
     from dataclasses import asdict
-    (chunks_dir / "manifest.json").write_text(
+    (staging_dir / "manifest.json").write_text(
         json.dumps(asdict(manifest), indent=2) + "\n",
         encoding="utf-8",
     )
@@ -406,7 +409,7 @@ class TestResolvePagesPerChunk:
     def test_manifest_matches_returns_silently(self, tmp_path: Path):
         """When manifest matches requested value, returns it (no warning)."""
         output_file = tmp_path / "doc.md"
-        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=15)
+        _write_manifest(tmp_path / "doc.staging", pages_per_chunk=15)
 
         pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
         assert pipeline.resolve_pages_per_chunk(15) == 15
@@ -414,7 +417,7 @@ class TestResolvePagesPerChunk:
     def test_manifest_mismatch_returns_manifest_value(self, tmp_path: Path):
         """When manifest differs, returns the manifest value."""
         output_file = tmp_path / "doc.md"
-        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=20)
+        _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
         pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
         assert pipeline.resolve_pages_per_chunk(10) == 20
@@ -422,7 +425,7 @@ class TestResolvePagesPerChunk:
     def test_manifest_mismatch_logs_warning(self, tmp_path: Path, caplog):
         """When manifest differs, a warning is logged."""
         output_file = tmp_path / "doc.md"
-        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=20)
+        _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
         pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
         import logging
@@ -437,9 +440,9 @@ class TestResolvePagesPerChunk:
     def test_corrupt_manifest_returns_requested(self, tmp_path: Path):
         """Corrupt manifest is treated as missing; returns requested."""
         output_file = tmp_path / "doc.md"
-        chunks_dir = tmp_path / "doc.chunks"
-        chunks_dir.mkdir()
-        (chunks_dir / "manifest.json").write_text("bad json", encoding="utf-8")
+        staging_dir = tmp_path / "doc.staging"
+        staging_dir.mkdir()
+        (staging_dir / "manifest.json").write_text("bad json", encoding="utf-8")
 
         pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
         assert pipeline.resolve_pages_per_chunk(10) == 10
@@ -447,7 +450,7 @@ class TestResolvePagesPerChunk:
     def test_force_bypasses_manifest(self, tmp_path: Path):
         """With force=True, returns requested value even if manifest differs."""
         output_file = tmp_path / "doc.md"
-        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=20)
+        _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
         pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
         assert pipeline.resolve_pages_per_chunk(10, force=True) == 10
@@ -455,7 +458,7 @@ class TestResolvePagesPerChunk:
     def test_force_no_warning(self, tmp_path: Path, caplog):
         """With force=True, no warning is logged even on mismatch."""
         output_file = tmp_path / "doc.md"
-        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=20)
+        _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
         pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
         import logging

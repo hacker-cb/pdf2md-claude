@@ -110,18 +110,18 @@ class TestCreateOrValidate:
     """Tests for WorkDir manifest creation and validation."""
 
     def test_creates_directory_and_manifest(self, tmp_path: Path):
-        """First call creates the .chunks dir and manifest.json."""
+        """First call creates the .staging dir and manifest.json."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         cached = wd.create_or_validate(**_default_params(pdf))
 
         assert cached == []
-        assert (tmp_path / "out.chunks" / "manifest.json").exists()
+        assert (tmp_path / "out.staging" / "manifest.json").exists()
 
     def test_matching_manifest_returns_empty_cached(self, tmp_path: Path):
         """Repeated call with same params returns empty cached list."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
         cached = wd.create_or_validate(**_default_params(pdf))
 
@@ -130,7 +130,7 @@ class TestCreateOrValidate:
     def test_matching_manifest_detects_cached_chunks(self, tmp_path: Path):
         """If chunks exist on disk and manifest matches, they're detected."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         # Save chunk 0.
@@ -143,7 +143,7 @@ class TestCreateOrValidate:
     def test_staleness_clears_chunks(self, tmp_path: Path):
         """Changing a parameter invalidates all cached chunks."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         # Save a chunk.
@@ -162,7 +162,7 @@ class TestCreateOrValidate:
     def test_staleness_on_model_change(self, tmp_path: Path):
         """Changing model_id invalidates all cached chunks."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
         wd.save_chunk(0, "md", "ctx", _make_usage(0))
 
@@ -185,7 +185,7 @@ class TestChunkIO:
     def test_save_load_markdown(self, tmp_path: Path):
         """Markdown content should survive save/load."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         wd.save_chunk(0, "# Title\n\nContent", "tail", _make_usage(0))
@@ -194,7 +194,7 @@ class TestChunkIO:
     def test_save_load_context(self, tmp_path: Path):
         """Context tail should survive save/load."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         wd.save_chunk(0, "md", "my context tail", _make_usage(0))
@@ -203,7 +203,7 @@ class TestChunkIO:
     def test_load_context_missing_returns_empty(self, tmp_path: Path):
         """Loading context for a non-existent chunk returns empty string."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         assert wd.load_chunk_context(99) == ""
@@ -211,7 +211,7 @@ class TestChunkIO:
     def test_save_load_usage(self, tmp_path: Path):
         """ChunkUsageStats should survive save/load roundtrip."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         usage = _make_usage(1)
@@ -222,13 +222,13 @@ class TestChunkIO:
     def test_file_naming_1_indexed(self, tmp_path: Path):
         """Chunk files should use 1-indexed naming."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         wd.save_chunk(0, "md", "ctx", _make_usage(0))
-        assert (tmp_path / "out.chunks" / "chunk_01.md").exists()
-        assert (tmp_path / "out.chunks" / "chunk_01_context.md").exists()
-        assert (tmp_path / "out.chunks" / "chunk_01_meta.json").exists()
+        assert (tmp_path / "out.staging" / "pass1" / "chunk_01.md").exists()
+        assert (tmp_path / "out.staging" / "pass1" / "chunk_01_context.md").exists()
+        assert (tmp_path / "out.staging" / "pass1" / "chunk_01_meta.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ class TestHasChunk:
     def test_false_before_save(self, tmp_path: Path):
         """has_chunk returns False for unsaved chunks."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         assert not wd.has_chunk(0)
@@ -250,7 +250,7 @@ class TestHasChunk:
     def test_true_after_save(self, tmp_path: Path):
         """has_chunk returns True after save_chunk completes."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         wd.save_chunk(0, "md", "ctx", _make_usage(0))
@@ -259,7 +259,7 @@ class TestHasChunk:
     def test_false_for_different_index(self, tmp_path: Path):
         """has_chunk returns False for a different (unsaved) index."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         wd.save_chunk(0, "md", "ctx", _make_usage(0))
@@ -277,7 +277,7 @@ class TestStatsIO:
     def test_roundtrip(self, tmp_path: Path):
         """DocumentUsageStats should survive save/load."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         stats = DocumentUsageStats(
@@ -298,7 +298,7 @@ class TestStatsIO:
     def test_load_missing_returns_none(self, tmp_path: Path):
         """load_stats returns None when stats.json does not exist."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         assert wd.load_stats() is None
@@ -315,7 +315,7 @@ class TestInvalidate:
     def test_clears_everything(self, tmp_path: Path):
         """invalidate removes chunks, stats, and manifest."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         wd.save_chunk(0, "md0", "ctx0", _make_usage(0))
@@ -330,12 +330,12 @@ class TestInvalidate:
         assert not wd.has_chunk(0)
         assert not wd.has_chunk(1)
         assert wd.load_stats() is None
-        assert not (tmp_path / "out.chunks" / "manifest.json").exists()
+        assert not (tmp_path / "out.staging" / "manifest.json").exists()
 
     def test_keeps_directory(self, tmp_path: Path):
-        """invalidate keeps the .chunks directory itself."""
+        """invalidate keeps the .staging directory itself."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
         wd.save_chunk(0, "md", "ctx", _make_usage(0))
 
@@ -347,19 +347,19 @@ class TestInvalidate:
     def test_clears_manifest(self, tmp_path: Path):
         """invalidate removes manifest.json."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
         wd.save_chunk(0, "md", "ctx", _make_usage(0))
 
         wd.invalidate()
 
-        assert not (tmp_path / "out.chunks" / "manifest.json").exists()
+        assert not (tmp_path / "out.staging" / "manifest.json").exists()
         assert wd.load_manifest() is None
 
     def test_resets_cached_manifest(self, tmp_path: Path):
         """invalidate clears the in-memory manifest cache."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         wd.invalidate()
@@ -369,8 +369,8 @@ class TestInvalidate:
             wd.chunk_count()
 
     def test_safe_when_directory_missing(self, tmp_path: Path):
-        """invalidate does not raise when .chunks/ dir does not exist."""
-        wd = WorkDir(tmp_path / "nonexistent.chunks")
+        """invalidate does not raise when .staging/ dir does not exist."""
+        wd = WorkDir(tmp_path / "nonexistent.staging")
         # Should not raise FileNotFoundError.
         wd.invalidate()
 
@@ -389,13 +389,13 @@ class TestResume:
         params = _default_params(pdf)
 
         # First "run": save chunks 0 and 1.
-        wd1 = WorkDir(tmp_path / "out.chunks")
+        wd1 = WorkDir(tmp_path / "out.staging")
         wd1.create_or_validate(**params)
         wd1.save_chunk(0, "chunk0", "ctx0", _make_usage(0))
         wd1.save_chunk(1, "chunk1", "ctx1", _make_usage(1))
 
         # Second "run": new WorkDir instance with same params.
-        wd2 = WorkDir(tmp_path / "out.chunks")
+        wd2 = WorkDir(tmp_path / "out.staging")
         cached = wd2.create_or_validate(**params)
 
         assert sorted(cached) == [0, 1]
@@ -408,12 +408,12 @@ class TestResume:
         params = _default_params(pdf)
 
         # Save only chunk 0 (chunk 1 "crashed").
-        wd1 = WorkDir(tmp_path / "out.chunks")
+        wd1 = WorkDir(tmp_path / "out.staging")
         wd1.create_or_validate(**params)
         wd1.save_chunk(0, "chunk0", "ctx0", _make_usage(0))
 
         # Resume: only chunk 0 is cached.
-        wd2 = WorkDir(tmp_path / "out.chunks")
+        wd2 = WorkDir(tmp_path / "out.staging")
         cached = wd2.create_or_validate(**params)
 
         assert cached == [0]
@@ -432,7 +432,7 @@ class TestLoadManifest:
     def test_returns_manifest_when_exists(self, tmp_path: Path):
         """load_manifest returns the manifest after create_or_validate."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         manifest = wd.load_manifest()
@@ -442,27 +442,27 @@ class TestLoadManifest:
         assert manifest.model_id == "claude-test-1"
 
     def test_returns_none_when_missing(self, tmp_path: Path):
-        """load_manifest returns None when .chunks/ does not exist."""
-        wd = WorkDir(tmp_path / "nonexistent.chunks")
+        """load_manifest returns None when .staging/ does not exist."""
+        wd = WorkDir(tmp_path / "nonexistent.staging")
         assert wd.load_manifest() is None
 
     def test_returns_none_when_corrupt(self, tmp_path: Path):
         """load_manifest returns None on corrupt manifest.json."""
-        chunks_dir = tmp_path / "out.chunks"
-        chunks_dir.mkdir()
-        (chunks_dir / "manifest.json").write_text("not json!", encoding="utf-8")
+        staging_dir = tmp_path / "out.staging"
+        staging_dir.mkdir()
+        (staging_dir / "manifest.json").write_text("not json!", encoding="utf-8")
 
-        wd = WorkDir(chunks_dir)
+        wd = WorkDir(staging_dir)
         assert wd.load_manifest() is None
 
     def test_independent_of_internal_cache(self, tmp_path: Path):
         """load_manifest reads from disk, independent of _manifest cache."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         # Create a fresh WorkDir instance (no _manifest cached).
-        wd2 = WorkDir(tmp_path / "out.chunks")
+        wd2 = WorkDir(tmp_path / "out.staging")
         manifest = wd2.load_manifest()
         assert manifest is not None
         assert manifest.num_chunks == 2
@@ -474,13 +474,42 @@ class TestChunkCount:
     def test_returns_num_chunks(self, tmp_path: Path):
         """chunk_count returns num_chunks from the manifest."""
         pdf = _make_pdf(tmp_path)
-        wd = WorkDir(tmp_path / "out.chunks")
+        wd = WorkDir(tmp_path / "out.staging")
         wd.create_or_validate(**_default_params(pdf))
 
         assert wd.chunk_count() == 2
 
     def test_raises_without_manifest(self, tmp_path: Path):
         """chunk_count raises if no manifest has been loaded."""
-        wd = WorkDir(tmp_path / "nonexistent.chunks")
+        wd = WorkDir(tmp_path / "nonexistent.staging")
         with pytest.raises(RuntimeError, match="manifest not loaded"):
             wd.chunk_count()
+
+
+# ---------------------------------------------------------------------------
+# 10. Phase output
+# ---------------------------------------------------------------------------
+
+
+class TestOutputIO:
+    """Tests for phase output save/load operations."""
+
+    def test_save_load_output_roundtrip(self, tmp_path: Path):
+        """Saved output.md should survive save/load."""
+        pdf = _make_pdf(tmp_path)
+        wd = WorkDir(tmp_path / "out.staging")
+        wd.create_or_validate(**_default_params(pdf))
+
+        markdown = "# Test Output\n\nThis is the merged markdown."
+        wd.save_output(markdown)
+        loaded = wd.load_output()
+
+        assert loaded == markdown
+
+    def test_load_output_missing_returns_none(self, tmp_path: Path):
+        """load_output returns None when output.md does not exist."""
+        pdf = _make_pdf(tmp_path)
+        wd = WorkDir(tmp_path / "out.staging")
+        wd.create_or_validate(**_default_params(pdf))
+
+        assert wd.load_output() is None

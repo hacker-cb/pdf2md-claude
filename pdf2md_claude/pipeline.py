@@ -277,7 +277,7 @@ class ConversionPipeline:
         self._steps = steps
         self._pdf_path = pdf_path
         self._output_file = output_file
-        self._work_dir_path = output_file.with_suffix(".chunks")
+        self._work_dir = WorkDir(output_file.with_suffix(".staging"))
 
     # -- public API --------------------------------------------------------
 
@@ -306,8 +306,7 @@ class ConversionPipeline:
         """
         if force:
             return requested
-        work_dir = WorkDir(self._work_dir_path)
-        manifest = work_dir.load_manifest()
+        manifest = self._work_dir.load_manifest()
         if manifest is None:
             return requested
         if manifest.pages_per_chunk != requested:
@@ -325,10 +324,9 @@ class ConversionPipeline:
             ``DocumentUsageStats`` if ``stats.json`` exists and is valid,
             ``None`` otherwise.
         """
-        work_dir = WorkDir(self._work_dir_path)
-        if not work_dir.path.exists():
+        if not self._work_dir.path.exists():
             return None
-        return work_dir.load_stats()
+        return self._work_dir.load_stats()
 
     def needs_conversion(
         self,
@@ -347,12 +345,11 @@ class ConversionPipeline:
             return True
         # Output exists -- check manifest for model staleness.
         if model_id is not None:
-            work_dir = WorkDir(self._work_dir_path)
-            manifest = work_dir.load_manifest()
+            manifest = self._work_dir.load_manifest()
             if manifest is not None and manifest.model_id != model_id:
                 return True
             # Missing/corrupt manifest: output file exists, no reason
-            # to force reconversion (user may have deleted .chunks/).
+            # to force reconversion (user may have deleted .staging/).
         return False
 
     def convert(
@@ -382,19 +379,16 @@ class ConversionPipeline:
         Returns:
             :class:`PipelineResult` with stats, validation, and output path.
         """
-        # 1. Create work directory.
-        work_dir = WorkDir(self._work_dir_path)
-
-        # 2. Force invalidation if requested.
+        # 1. Force invalidation if requested.
         if force:
-            work_dir.invalidate()
+            self._work_dir.invalidate()
 
-        # 3. Convert (chunked, with disk resume).
+        # 2. Convert (chunked, with disk resume).
         result: ConversionResult = converter.convert(
-            self._pdf_path, work_dir, pages_per_chunk, max_pages=max_pages,
+            self._pdf_path, self._work_dir, pages_per_chunk, max_pages=max_pages,
         )
 
-        # 4–6. Merge, run steps, write.
+        # 3–5. Merge, run steps, write.
         parts = [cr.markdown for cr in result.chunks]
         ctx, step_timings = self._process(parts)
 
@@ -411,45 +405,43 @@ class ConversionPipeline:
         """Re-run merge + steps + write from cached chunks on disk.
 
         No API calls are made.  Useful for iterating on merge/post-processing
-        logic after a conversion has already populated the ``.chunks/`` dir.
+        logic after a conversion has already populated the ``.staging/`` dir.
 
         Returns:
             :class:`PipelineResult` with validation results and output path.
 
         Raises:
-            RuntimeError: If the ``.chunks/`` directory or manifest is missing.
+            RuntimeError: If the ``.staging/`` directory or manifest is missing.
         """
-        work_dir = WorkDir(self._work_dir_path)
-
-        if not work_dir.path.exists():
+        if not self._work_dir.path.exists():
             raise RuntimeError(
-                f"Chunks directory not found: {work_dir.path}\n"
+                f"Staging directory not found: {self._work_dir.path}\n"
                 f"Run a full conversion first before using --remerge."
             )
 
         # 1. Discover chunk count and total pages from manifest.
-        num_chunks = work_dir.chunk_count()
-        total_pages = work_dir.total_pages()
+        num_chunks = self._work_dir.chunk_count()
+        total_pages = self._work_dir.total_pages()
         _log.info(
             "  Re-merging from %d cached chunks (%d pages)...",
             num_chunks, total_pages,
         )
 
         # 2. Verify all chunks exist and load markdown.
-        missing = [i for i in range(num_chunks) if not work_dir.has_chunk(i)]
+        missing = [i for i in range(num_chunks) if not self._work_dir.has_chunk(i)]
         if missing:
             raise RuntimeError(
                 f"Missing chunks: {', '.join(str(i + 1) for i in missing)}. "
                 f"Run a full conversion first (without --remerge) to generate them."
             )
 
-        parts = [work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
+        parts = [self._work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
 
         # 3–5. Merge, run steps, write.
         ctx, step_timings = self._process(parts)
 
         # Load stats from cache if available (for display purposes).
-        stats = work_dir.load_stats()
+        stats = self._work_dir.load_stats()
         if stats is None:
             # Minimal stats when stats.json is missing.
             stats = DocumentUsageStats(
@@ -523,6 +515,7 @@ class ConversionPipeline:
             Tuple of (context after all steps, per-step timings dict).
         """
         markdown = self._merge(parts)
+        self._work_dir.save_output(markdown)
         ctx = ProcessingContext(
             markdown=markdown,
             pdf_path=self._pdf_path,

@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import base64
 import logging
-import random
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import anthropic
 import pymupdf
 
+from pdf2md_claude.claude_api import ApiResponse, ClaudeApi
 from pdf2md_claude.markers import PAGE_BEGIN, PAGE_END
 from pdf2md_claude.models import ModelConfig, DocumentUsageStats, calculate_cost, fmt_duration
 from pdf2md_claude.workdir import ChunkUsageStats, WorkDir
@@ -40,35 +39,6 @@ DEFAULT_PAGES_PER_CHUNK = 10
 # complete pages are included until the threshold is met.
 _CONTEXT_MIN_PAGES = 3
 _CONTEXT_MIN_LINES = 200
-
-# Retry configuration for transient API/network errors.
-_DEFAULT_MAX_RETRIES = 10
-"""Default maximum total attempts per chunk (1 = no retry)."""
-
-_RETRY_MIN_DELAY_S = 1
-"""Initial retry delay in seconds."""
-
-_RETRY_MAX_DELAY_S = 30
-"""Maximum retry delay in seconds (cap for exponential backoff)."""
-
-
-def _is_retryable(exc: BaseException) -> bool:
-    """Classify whether an exception is transient and worth retrying.
-
-    Returns ``True`` for network/transport errors and server-side failures
-    that are likely to succeed on a subsequent attempt.  Returns ``False``
-    for permanent client errors (bad request, auth, content filtering).
-
-    Uses string-based type checking for ``httpcore``/``httpx`` transport
-    errors to avoid adding a hard import dependency on ``httpcore``.
-    """
-    if isinstance(exc, (anthropic.APIConnectionError, anthropic.APITimeoutError)):
-        return True
-    if isinstance(exc, anthropic.APIStatusError):
-        return exc.status_code in (429, 500, 502, 503, 529)
-    # httpcore.RemoteProtocolError during streaming — not wrapped by SDK.
-    type_name = type(exc).__name__
-    return type_name in ("RemoteProtocolError", "ReadError", "ProtocolError")
 
 
 # ---------------------------------------------------------------------------
@@ -134,22 +104,6 @@ class ChunkPlan:
     @property
     def page_count(self) -> int:
         return self.page_end - self.page_start + 1
-
-
-@dataclass
-class ApiResponse:
-    """Raw response from a single Claude API call.
-
-    Replaces unnamed tuples returned by ``_send_to_claude`` and
-    ``_convert_chunk``, making fields self-documenting and easy to extend.
-    """
-
-    markdown: str
-    input_tokens: int
-    output_tokens: int
-    cache_creation_tokens: int
-    cache_read_tokens: int
-    stop_reason: str
 
 
 @dataclass
@@ -230,10 +184,6 @@ def plan_chunks(
         idx += 1
 
     return chunks
-
-
-_CACHE_CONTROL = {"type": "ephemeral", "ttl": "1h"}
-"""Anthropic prompt-caching control block (1-hour TTL)."""
 
 
 def _get_context_tail(
@@ -345,29 +295,25 @@ def _remap_page_markers(markdown: str, page_start: int) -> str:
 class PdfConverter:
     """Chunked PDF-to-Markdown converter using Claude's native PDF API.
 
-    Holds the API context (client, model, caching, system prompt) as
-    instance state so that it does not need to be threaded through every
-    internal method call.
+    Holds the API wrapper and model config as instance state so that it
+    does not need to be threaded through every internal method call.
 
     Usage::
 
-        converter = PdfConverter(client, model, use_cache=True)
+        api = ClaudeApi(client, model, use_cache=True)
+        converter = PdfConverter(api, model)
         result = converter.convert(pdf_path, work_dir, pages_per_chunk=10)
     """
 
     def __init__(
         self,
-        client: anthropic.Anthropic,
+        api: ClaudeApi,
         model: ModelConfig,
-        use_cache: bool = False,
         system_prompt: str | None = None,
-        max_retries: int = _DEFAULT_MAX_RETRIES,
     ) -> None:
-        self._client = client
+        self._api = api
         self._model = model
-        self._use_cache = use_cache
         self._system_prompt = system_prompt
-        self._max_retries = max_retries
 
     # -- public API --------------------------------------------------------
 
@@ -639,10 +585,6 @@ class PdfConverter:
     ) -> ApiResponse:
         """Convert a single chunk of PDF pages to Markdown.
 
-        Retries transient API/network errors up to ``self._max_retries``
-        total attempts with exponential backoff (1-30 s).  Non-retryable
-        errors (auth, content filtering, max_tokens) are raised immediately.
-
         Returns:
             :class:`ApiResponse` with markdown text and token usage.
 
@@ -651,29 +593,41 @@ class PdfConverter:
         """
         pdf_b64 = extract_pdf_pages(pdf_path, chunk.page_start, chunk.page_end)
 
+        # Build system prompt.
+        sys_text = (
+            self._system_prompt
+            if self._system_prompt is not None
+            else SYSTEM_PROMPT
+        )
+
+        # Build PDF document block with optional cache_control.
+        doc_block = self._api.cached_block({
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": pdf_b64,
+            },
+        })
+
+        # Build messages list.
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    doc_block,
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ]
+
+        # Send to Claude with retry.
         start = time.time()
-        resp: ApiResponse | None = None
-        for attempt in range(1, self._max_retries + 1):
-            try:
-                resp = self._send_to_claude(pdf_b64, prompt)
-                break
-            except Exception as e:
-                if not _is_retryable(e) or attempt == self._max_retries:
-                    raise
-                # Exponential backoff: 1, 2, 4, 8, 16, 30, 30, ... capped.
-                base = min(
-                    _RETRY_MIN_DELAY_S * (2 ** (attempt - 1)),
-                    _RETRY_MAX_DELAY_S,
-                )
-                delay = base + random.uniform(0, base * 0.25)
-                _log.warning(
-                    "    Chunk pages %d-%d: %s (attempt %d/%d, retrying in %.0fs)",
-                    chunk.page_start, chunk.page_end,
-                    f"{type(e).__name__}: {e}",
-                    attempt, self._max_retries, delay,
-                )
-                time.sleep(delay)
-        assert resp is not None  # unreachable: loop always breaks or raises
+        retry_context = f"pages {chunk.page_start}-{chunk.page_end}"
+        resp = self._api.send_message(sys_text, messages, retry_context=retry_context)
         elapsed = time.time() - start
 
         _log.debug(
@@ -689,77 +643,3 @@ class PdfConverter:
             )
 
         return resp
-
-    def _send_to_claude(
-        self,
-        pdf_b64: str,
-        user_prompt: str,
-    ) -> ApiResponse:
-        """Send a base64-encoded PDF to Claude and return the response.
-
-        Uses streaming to avoid the 10-minute timeout limit imposed by the
-        Anthropic SDK for large/slow requests (e.g., Opus models with PDF
-        input).
-
-        Returns:
-            :class:`ApiResponse` with markdown text, token counts, and
-            stop reason.
-        """
-        # Build system prompt (with optional cache_control).
-        sys_text = (
-            self._system_prompt
-            if self._system_prompt is not None
-            else SYSTEM_PROMPT
-        )
-        system_block: dict = {"type": "text", "text": sys_text}
-        if self._use_cache:
-            system_block["cache_control"] = _CACHE_CONTROL
-
-        # Build PDF document block (with optional cache_control).
-        doc_block: dict = {
-            "type": "document",
-            "source": {
-                "type": "base64",
-                "media_type": "application/pdf",
-                "data": pdf_b64,
-            },
-        }
-        if self._use_cache:
-            doc_block["cache_control"] = _CACHE_CONTROL
-
-        with self._client.messages.stream(
-            model=self._model.model_id,
-            max_tokens=self._model.max_output_tokens,
-            system=[system_block],
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        doc_block,
-                        {
-                            "type": "text",
-                            "text": user_prompt,
-                        },
-                    ],
-                }
-            ],
-        ) as stream:
-            message = stream.get_final_message()
-
-        markdown = ""
-        for block in message.content:
-            if block.type == "text":
-                markdown += block.text
-
-        # Extract cache token counts (may be 0 or absent when caching is off).
-        cache_creation = getattr(message.usage, "cache_creation_input_tokens", 0) or 0
-        cache_read = getattr(message.usage, "cache_read_input_tokens", 0) or 0
-
-        return ApiResponse(
-            markdown=markdown,
-            input_tokens=message.usage.input_tokens,
-            output_tokens=message.usage.output_tokens,
-            cache_creation_tokens=cache_creation,
-            cache_read_tokens=cache_read,
-            stop_reason=message.stop_reason,
-        )

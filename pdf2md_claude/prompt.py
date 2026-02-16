@@ -139,46 +139,73 @@ _RULE_TABLES = f"""\
    - Use `<thead>` for header rows and `<tbody>` for data rows.
    - Use `<th>` for header cells and `<td>` for data cells.
    - Use `rowspan` and `colspan` for merged cells.
-   - **Faithful structure** (CRITICAL): Reproduce the 100% original table \
-structure with exact `colspan`/`rowspan` values.
+   - **Faithful structure** (CRITICAL): Reproduce the original table structure \
+with exact `colspan`/`rowspan` values.
       - If the PDF shows N header rows, output N `<tr>` rows in `<thead>` — \
 do NOT collapse or merge header rows.
-      - Use `rowspan` for cells that span multiple rows, `colspan` for \
-cells that span multiple columns. A single cell can have BOTH attributes \
-at the same time (e.g. `<th rowspan="2" colspan="3">`).
+      - Use `rowspan` for cells spanning multiple rows, `colspan` for cells \
+spanning multiple columns. A single cell can have BOTH (e.g. \
+`<th rowspan="2" colspan="3">`).
       - Preserve every blank/empty cell as `<td></td>` or `<th></th>`.
       - Keep empty separator rows — do NOT remove them.
-      - The total column count MUST be identical for every row. A cell with \
-`colspan="3"` counts as 3; a cell with `rowspan="N"` in row R occupies \
-that column in rows R through R+N-1.
-   - **rowspan boundary rule** (CRITICAL): A `rowspan` value must NEVER \
-exceed the number of remaining rows within its section (`<thead>` or \
-`<tbody>`). If `<thead>` has 2 `<tr>` rows, the maximum rowspan for a \
-cell in row 1 is 2, not 3. Rowspan must NOT bleed from `<thead>` into \
-`<tbody>` or vice versa. Before writing any `rowspan`, count the actual \
-rows in the section and cap accordingly.
-   - **Multi-level headers and colspan** (CRITICAL): When a header cell \
-visually groups multiple sub-columns beneath it, it MUST have `colspan` \
-equal to the number of sub-columns. Common mistake: using only `rowspan` \
-when the cell also spans multiple columns — the correct markup needs \
-`colspan` too (e.g. `<th rowspan="2" colspan="3">`). Count the \
-sub-header `<th>` cells in the next row and verify they fill the \
-colspan exactly.
-   - **Self-check procedure** (CRITICAL — perform this for EVERY table):
-      1. Determine the table's column count W from the first header row \
-(sum of explicit cells, each weighted by its colspan).
-      2. For each subsequent row, compute: (number of explicit cells, each \
-weighted by colspan) + (cells inherited from rowspan of earlier rows) = \
-must equal W.
-      3. If ANY row ≠ W, find and fix the mismatch BEFORE outputting. \
-Common fixes: add missing `colspan`, reduce over-sized `rowspan`, add \
-or remove a `<td>`/`<th>`.
-      4. Double-check that rowspan values do not cross the `<thead>`/\
-`<tbody>` boundary.
+   - **Rotated / angled header text** (CRITICAL): Technical tables often use \
+rotated (vertical or diagonal) text for column headers. Each rotated label \
+is a separate column — do NOT collapse them. When a group heading spans \
+several rotated sub-columns, set its `colspan` equal to the number of \
+sub-column labels beneath it.
+   - **Column count — bottom-up strategy** (CRITICAL): To determine the \
+table width W, look at the LAST (bottom-most) header row in `<thead>`. \
+Count every individual `<th>` cell in that row (each weighted by its \
+`colspan`), plus any columns still occupied by active `rowspan` cells \
+from rows above. That total is W. Every other row — both header and \
+body — MUST also total W.
+   - **No empty header rows** (CRITICAL): Every `<tr>` inside `<thead>` \
+MUST contain at least one explicit `<th>` cell. NEVER emit `<tr></tr>` \
+or `<tr>\\n</tr>` with zero cells. When a `colspan` group in row R \
+expires (it has no `rowspan`, or its `rowspan` ends at row R), the freed \
+columns MUST be filled with explicit `<th>` cells in the very next row \
+(R+1) — do NOT skip that row and place sub-labels in a later row. Use \
+`<th></th>` placeholders if the PDF shows no text in that position.
+   - **Multi-level header example** — a 6-column table with a 3-row header:
+   ```
+   <thead>
+     <tr>
+       <th rowspan="3">Name</th>        <!-- col 1 -->
+       <th colspan="3">Details</th>     <!-- cols 2-4 -->
+       <th rowspan="3">Price</th>       <!-- col 5 -->
+       <th rowspan="3">Notes</th>       <!-- col 6 -->
+     </tr>
+     <tr>
+       <th rowspan="2">Type</th>        <!-- col 2 -->
+       <th colspan="2">Dimensions</th> <!-- cols 3-4 -->
+     </tr>
+     <tr>
+       <th>Width</th>                   <!-- col 3 -->
+       <th>Height</th>                  <!-- col 4 -->
+     </tr>
+   </thead>
+   ```
+   Verify W = 6 for every row (↓ = inherited from rowspan above):
+   Row 1: Name(1) + Details(3) + Price(1) + Notes(1) = 6 ✓
+   Row 2: Type(1) + Dimensions(2) + Name↓ + Price↓ + Notes↓ = 3+3 = 6 ✓
+   Row 3: Width(1) + Height(1) + Name↓ + Type↓ + Price↓ + Notes↓ = 2+4 = 6 ✓
+   Key: "Details" (colspan=3) expires after row 1, so its 3 freed columns \
+(2-4) MUST be filled immediately in row 2: Type(col 2) + Dimensions(cols \
+3-4). Type needs `rowspan="2"` to carry into row 3; without it row 3 \
+would only have 5 columns.
+   - **rowspan boundary rule** (CRITICAL): A `rowspan` must NEVER exceed \
+the remaining rows in its section (`<thead>` or `<tbody>`). If `<thead>` \
+has 2 rows, max rowspan in row 1 is 2. Rowspan must NOT cross the \
+`<thead>`/`<tbody>` boundary.
+   - **Column-count self-check** (CRITICAL): After writing EACH row — \
+header AND body — verify: (explicit cells, each weighted by its colspan) \
++ (cells inherited from active rowspan above) = W. Pay special attention \
+to body rows with `colspan`: count how many header columns the merged \
+cell actually spans and set `colspan` to that exact number. If any row \
+does not equal W, fix the mismatch before proceeding to the next row.
    - **Completeness** (CRITICAL): You MUST convert EVERY table completely, \
-no matter how large or complex. NEVER replace a table with a summary, \
-description, or "see below" reference. If a table has 100 rows, output all \
-100 rows.
+no matter how large. NEVER replace a table with a summary, description, or \
+"see below" reference. If a table has 100 rows, output all 100 rows.
    - **Cell formatting**: Preserve checkmarks (use ✓), footnote markers \
 (a, b, c, etc.), and ALL special symbols exactly as they appear. Use \
 `<em>` (not `<i>`) for italics, and `<br>` (single, not double \
@@ -188,7 +215,10 @@ of a table from a previous page (the PDF shows "(continued)" in the header, \
 or the table has the same column structure and title as one from a prior \
 page), emit `{TABLE_CONTINUE.marker}` on its own line immediately BEFORE the table title \
 or `<table>` tag. Still output the full table including its repeated headers \
-exactly as they appear in the PDF — the marker is metadata for post-processing."""
+exactly as they appear in the PDF — the marker is metadata for post-processing. \
+NEVER emit `{TABLE_CONTINUE.marker}` for the first table in your output or when \
+no previous page in this chunk contains the same table — it means "this table \
+already appeared earlier and continues here", not "this table is large"."""
 
 # Rule — Images (diagrams, figures, charts, illustrations)
 _RULE_IMAGES = f"""\
