@@ -16,7 +16,10 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 import anthropic
@@ -60,6 +63,52 @@ _SUMMARY_SEP = "=" * 78
 
 
 # ---------------------------------------------------------------------------
+# Thread-local logging context (for parallel document processing)
+# ---------------------------------------------------------------------------
+
+_thread_context = threading.local()
+"""Per-thread storage for the current document name."""
+
+_doc_prefix_width: int = 0
+"""Minimum width for the ``[doc_name]`` prefix (set before spawning workers).
+
+When non-zero the prefix is right-padded so that log messages align
+across documents with different name lengths.  Zero means no prefix.
+"""
+
+
+class _DocumentContextFilter(logging.Filter):
+    """Inject per-thread document name into every log record.
+
+    When a worker thread sets ``_thread_context.doc_name``, all log
+    records emitted from that thread will carry a ``doc_prefix`` field
+    (e.g. ``"[my_doc]    "``), right-padded to ``_doc_prefix_width``
+    for aligned output.  When not set, ``doc_prefix`` is the empty
+    string so single-threaded output is unchanged.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        doc = getattr(_thread_context, "doc_name", "")
+        if doc:
+            tag = f"[{doc}]"
+            # +1 for the trailing space after the padded bracket tag.
+            record.doc_prefix = tag.ljust(_doc_prefix_width) + " "  # type: ignore[attr-defined]
+        else:
+            record.doc_prefix = ""  # type: ignore[attr-defined]
+        return True
+
+
+def set_document_context(doc_name: str) -> None:
+    """Set the document name for the current thread's log lines."""
+    _thread_context.doc_name = doc_name
+
+
+def clear_document_context() -> None:
+    """Clear the document name for the current thread."""
+    _thread_context.doc_name = ""
+
+
+# ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
 
@@ -69,7 +118,8 @@ def setup_colorized_logging():
     handler = colorlog.StreamHandler()
     handler.setFormatter(
         colorlog.ColoredFormatter(
-            "%(log_color)s%(levelname)-8s%(reset)s %(blue)s%(name)-9s%(reset)s: %(message)s",
+            "%(log_color)s%(levelname)-8s%(reset)s %(blue)s%(name)-9s%(reset)s: "
+            "%(doc_prefix)s%(message)s",
             log_colors={
                 "DEBUG": "cyan",
                 "INFO": "green",
@@ -82,6 +132,7 @@ def setup_colorized_logging():
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
+    handler.addFilter(_DocumentContextFilter())
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.INFO)
 
@@ -120,6 +171,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output directory for Markdown files "
              "(default: same directory as each PDF)",
+    )
+
+    jobs_parent = argparse.ArgumentParser(add_help=False)
+    jobs_parent.add_argument(
+        "-j", "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of documents to process in parallel (default: 1). "
+             "Each document's chunks are still processed sequentially.",
     )
 
     image_parent = argparse.ArgumentParser(add_help=False)
@@ -200,7 +261,7 @@ Run '%(prog)s COMMAND --help' for command-specific options.
     # -- convert ---------------------------------------------------------------
     p_convert = subparsers.add_parser(
         "convert",
-        parents=[verbose_parent, output_parent, image_parent],
+        parents=[verbose_parent, output_parent, jobs_parent, image_parent],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help="Convert PDF documents to Markdown",
         description="Convert PDF documents to Markdown using Claude's "
@@ -417,6 +478,7 @@ def _build_steps(args: argparse.Namespace) -> list[ProcessingStep]:
     return steps
 
 
+
 def _resolve_rules(
     pdf_path: Path,
     explicit_rules: Path | None,
@@ -559,6 +621,82 @@ def _convert_single_pdf(
         force=force,
     )
     return result.stats
+
+
+@dataclass
+class _DocConvertResult:
+    """Result of processing a single document (for parallel collection)."""
+
+    pdf_path: Path
+    status: str  # "converted", "cached", "failed"
+    stats: DocumentUsageStats | None = None
+    error: str | None = None
+
+
+def _convert_one_document(
+    pdf_path: Path,
+    *,
+    output_dir: Path | None,
+    model: ModelConfig,
+    client: anthropic.Anthropic,
+    steps: list[ProcessingStep],
+    pages_per_chunk: int,
+    max_pages: int | None,
+    force: bool,
+    use_cache: bool,
+    max_retries: int,
+    system_prompt: str | None,
+) -> _DocConvertResult:
+    """Thread-safe worker for converting a single PDF.
+
+    Sets the per-thread document context so that all log lines emitted
+    during this document's processing carry the ``[doc_name]`` prefix.
+    """
+    doc_name = pdf_path.stem
+    set_document_context(doc_name)
+    try:
+        output_file = resolve_output(pdf_path, output_dir)
+        pipeline = ConversionPipeline(steps, pdf_path, output_file)
+
+        if not pipeline.needs_conversion(
+            force=force, model_id=model.model_id,
+        ):
+            cached_stats = pipeline.load_cached_stats()
+            if cached_stats is not None:
+                _log.info(
+                    "⊙ %s (cached, $%.2f)", doc_name, cached_stats.cost,
+                )
+            else:
+                _log.info("⊙ %s (cached)", doc_name)
+            return _DocConvertResult(pdf_path, "cached", stats=cached_stats)
+
+        _log.info("Converting %s...", doc_name)
+
+        effective_ppc = pipeline.resolve_pages_per_chunk(
+            pages_per_chunk, force=force,
+        )
+
+        converter = PdfConverter(
+            client, model,
+            use_cache=use_cache,
+            system_prompt=system_prompt,
+            max_retries=max_retries,
+        )
+        result = pipeline.convert(
+            converter,
+            pages_per_chunk=effective_ppc,
+            max_pages=max_pages,
+            force=force,
+        )
+        return _DocConvertResult(pdf_path, "converted", stats=result.stats)
+
+    except Exception as e:
+        _log.error("  ✗ %s: %s: %s", doc_name, type(e).__name__, e)
+        return _DocConvertResult(pdf_path, "failed", error=str(e))
+
+    finally:
+        clear_document_context()
+
 
 
 def _log_summary(
@@ -750,56 +888,115 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
+        jobs: int = args.jobs
+        if jobs < 1:
+            _log.error("--jobs must be at least 1")
+            return 1
+
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []
         success = 0
         failure = 0
         cached = 0
-        rules_cache: dict[Path, str] = {}
 
-        for pdf_path in pdf_paths:
-            doc_name = pdf_path.stem
-            output_file = resolve_output(pdf_path, output_dir)
-            pipeline = ConversionPipeline(steps, pdf_path, output_file)
+        if jobs > 1:
+            # -- Parallel path -------------------------------------------------
+            # Compute aligned prefix width for parallel log output.
+            global _doc_prefix_width  # noqa: PLW0603
+            _doc_prefix_width = max(len(p.stem) for p in pdf_paths) + 2  # +2 for []
 
-            if not pipeline.needs_conversion(
-                force=args.force, model_id=model.model_id,
-            ):
-                cached_stats = pipeline.load_cached_stats()
-                if cached_stats is not None:
-                    all_stats.append(cached_stats)
-                    _log.info(
-                        "⊙ %s (cached, $%.2f)",
-                        doc_name, cached_stats.cost,
+            # Pre-resolve rules per PDF in the main thread (rules_cache is
+            # only touched here, then discarded).
+            rules_cache: dict[Path, str] = {}
+            system_prompts: dict[Path, str | None] = {}
+            for pdf_path in pdf_paths:
+                system_prompts[pdf_path] = _resolve_rules(
+                    pdf_path, args.rules, rules_cache,
+                )
+
+            max_workers = min(jobs, len(pdf_paths))
+            if max_workers > 1:
+                _log.info("Parallel: %d workers", max_workers)
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        _convert_one_document,
+                        pdf_path,
+                        output_dir=output_dir,
+                        model=model,
+                        client=client,
+                        steps=steps,
+                        pages_per_chunk=pages_per_chunk,
+                        max_pages=args.max_pages,
+                        force=args.force,
+                        use_cache=args.cache,
+                        max_retries=args.retries,
+                        system_prompt=system_prompts[pdf_path],
+                    ): pdf_path
+                    for pdf_path in pdf_paths
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result.stats is not None:
+                        all_stats.append(result.stats)
+                    if result.status == "converted":
+                        success += 1
+                    elif result.status == "cached":
+                        cached += 1
+                    else:
+                        failure += 1
+        else:
+            # -- Sequential path (unchanged behaviour) -------------------------
+            rules_cache_seq: dict[Path, str] = {}
+
+            for pdf_path in pdf_paths:
+                doc_name = pdf_path.stem
+                output_file = resolve_output(pdf_path, output_dir)
+                pipeline = ConversionPipeline(steps, pdf_path, output_file)
+
+                if not pipeline.needs_conversion(
+                    force=args.force, model_id=model.model_id,
+                ):
+                    cached_stats = pipeline.load_cached_stats()
+                    if cached_stats is not None:
+                        all_stats.append(cached_stats)
+                        _log.info(
+                            "⊙ %s (cached, $%.2f)",
+                            doc_name, cached_stats.cost,
+                        )
+                    else:
+                        _log.info("⊙ %s (cached)", doc_name)
+                    cached += 1
+                    continue
+
+                _log.info("%s:", doc_name)
+
+                effective_ppc = pipeline.resolve_pages_per_chunk(
+                    pages_per_chunk, force=args.force,
+                )
+
+                try:
+                    stats = _convert_single_pdf(
+                        pdf_path,
+                        model=model,
+                        client=client,
+                        pipeline=pipeline,
+                        pages_per_chunk=effective_ppc,
+                        max_pages=args.max_pages,
+                        force=args.force,
+                        use_cache=args.cache,
+                        max_retries=args.retries,
+                        rules_path=args.rules,
+                        rules_cache=rules_cache_seq,
                     )
-                else:
-                    _log.info("⊙ %s (cached)", doc_name)
-                cached += 1
-                continue
-
-            _log.info("%s:", doc_name)
-
-            try:
-                stats = _convert_single_pdf(
-                    pdf_path,
-                    model=model,
-                    client=client,
-                    pipeline=pipeline,
-                    pages_per_chunk=pages_per_chunk,
-                    max_pages=args.max_pages,
-                    force=args.force,
-                    use_cache=args.cache,
-                    max_retries=args.retries,
-                    rules_path=args.rules,
-                    rules_cache=rules_cache,
-                )
-                all_stats.append(stats)
-                success += 1
-            except Exception as e:
-                _log.error(
-                    "  ✗ %s: %s: %s", doc_name, type(e).__name__, e,
-                )
-                failure += 1
+                    all_stats.append(stats)
+                    success += 1
+                except Exception as e:
+                    _log.error(
+                        "  ✗ %s: %s: %s", doc_name, type(e).__name__, e,
+                    )
+                    failure += 1
 
         total_elapsed = time.time() - total_start
         _log_summary(

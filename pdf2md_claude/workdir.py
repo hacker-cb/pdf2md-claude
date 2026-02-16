@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -318,17 +319,31 @@ class WorkDir:
     # -- Housekeeping -------------------------------------------------------
 
     def invalidate(self) -> None:
-        """Remove all chunk files and stats, keeping the directory.
+        """Remove all contents of the work directory.
 
-        The manifest is preserved so that :meth:`create_or_validate`
-        can detect parameter changes on the next run.  Safe to call
-        even if the directory does not exist yet.
+        Deletes everything (chunks, stats, manifest) and recreates the
+        empty directory.  Safe to call even if the directory does not
+        exist yet.
         """
         if not self._path.exists():
             return
-        for f in self._path.iterdir():
-            if f.name.startswith("chunk_") or f.name == self._STATS_FILE:
-                f.unlink()
+        shutil.rmtree(self._path)
+        self._path.mkdir(parents=True, exist_ok=True)
+        self._manifest = None
+
+    def load_manifest(self) -> Manifest | None:
+        """Read the manifest from disk if it exists.
+
+        Returns ``None`` if the manifest file is missing or corrupt.
+        Unlike :meth:`_load_manifest`, this method never raises.
+        """
+        path = self._path / self._MANIFEST_FILE
+        if not path.exists():
+            return None
+        try:
+            return self._read_manifest(path)
+        except RuntimeError:
+            return None
 
     def _load_manifest(self) -> Manifest:
         """Lazy-load the manifest from disk.

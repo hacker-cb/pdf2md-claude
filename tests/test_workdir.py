@@ -312,8 +312,8 @@ class TestStatsIO:
 class TestInvalidate:
     """Tests for WorkDir.invalidate()."""
 
-    def test_clears_chunks_and_stats(self, tmp_path: Path):
-        """invalidate removes chunk files and stats.json."""
+    def test_clears_everything(self, tmp_path: Path):
+        """invalidate removes chunks, stats, and manifest."""
         pdf = _make_pdf(tmp_path)
         wd = WorkDir(tmp_path / "out.chunks")
         wd.create_or_validate(**_default_params(pdf))
@@ -330,6 +330,7 @@ class TestInvalidate:
         assert not wd.has_chunk(0)
         assert not wd.has_chunk(1)
         assert wd.load_stats() is None
+        assert not (tmp_path / "out.chunks" / "manifest.json").exists()
 
     def test_keeps_directory(self, tmp_path: Path):
         """invalidate keeps the .chunks directory itself."""
@@ -343,8 +344,8 @@ class TestInvalidate:
         assert wd.path.exists()
         assert wd.path.is_dir()
 
-    def test_keeps_manifest(self, tmp_path: Path):
-        """invalidate preserves manifest.json."""
+    def test_clears_manifest(self, tmp_path: Path):
+        """invalidate removes manifest.json."""
         pdf = _make_pdf(tmp_path)
         wd = WorkDir(tmp_path / "out.chunks")
         wd.create_or_validate(**_default_params(pdf))
@@ -352,7 +353,20 @@ class TestInvalidate:
 
         wd.invalidate()
 
-        assert (tmp_path / "out.chunks" / "manifest.json").exists()
+        assert not (tmp_path / "out.chunks" / "manifest.json").exists()
+        assert wd.load_manifest() is None
+
+    def test_resets_cached_manifest(self, tmp_path: Path):
+        """invalidate clears the in-memory manifest cache."""
+        pdf = _make_pdf(tmp_path)
+        wd = WorkDir(tmp_path / "out.chunks")
+        wd.create_or_validate(**_default_params(pdf))
+
+        wd.invalidate()
+
+        # After invalidate, chunk_count() should fail (no manifest).
+        with pytest.raises(RuntimeError, match="manifest not loaded"):
+            wd.chunk_count()
 
     def test_safe_when_directory_missing(self, tmp_path: Path):
         """invalidate does not raise when .chunks/ dir does not exist."""
@@ -410,6 +424,48 @@ class TestResume:
 # ---------------------------------------------------------------------------
 # 9. chunk_count
 # ---------------------------------------------------------------------------
+
+
+class TestLoadManifest:
+    """Tests for WorkDir.load_manifest() (lenient reader)."""
+
+    def test_returns_manifest_when_exists(self, tmp_path: Path):
+        """load_manifest returns the manifest after create_or_validate."""
+        pdf = _make_pdf(tmp_path)
+        wd = WorkDir(tmp_path / "out.chunks")
+        wd.create_or_validate(**_default_params(pdf))
+
+        manifest = wd.load_manifest()
+        assert manifest is not None
+        assert manifest.pages_per_chunk == 20
+        assert manifest.total_pages == 40
+        assert manifest.model_id == "claude-test-1"
+
+    def test_returns_none_when_missing(self, tmp_path: Path):
+        """load_manifest returns None when .chunks/ does not exist."""
+        wd = WorkDir(tmp_path / "nonexistent.chunks")
+        assert wd.load_manifest() is None
+
+    def test_returns_none_when_corrupt(self, tmp_path: Path):
+        """load_manifest returns None on corrupt manifest.json."""
+        chunks_dir = tmp_path / "out.chunks"
+        chunks_dir.mkdir()
+        (chunks_dir / "manifest.json").write_text("not json!", encoding="utf-8")
+
+        wd = WorkDir(chunks_dir)
+        assert wd.load_manifest() is None
+
+    def test_independent_of_internal_cache(self, tmp_path: Path):
+        """load_manifest reads from disk, independent of _manifest cache."""
+        pdf = _make_pdf(tmp_path)
+        wd = WorkDir(tmp_path / "out.chunks")
+        wd.create_or_validate(**_default_params(pdf))
+
+        # Create a fresh WorkDir instance (no _manifest cached).
+        wd2 = WorkDir(tmp_path / "out.chunks")
+        manifest = wd2.load_manifest()
+        assert manifest is not None
+        assert manifest.num_chunks == 2
 
 
 class TestChunkCount:

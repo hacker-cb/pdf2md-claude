@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from pdf2md_claude.pipeline import (
     ValidateStep,
 )
 from pdf2md_claude.validator import ValidationResult
+from pdf2md_claude.workdir import Manifest
 
 
 # ---------------------------------------------------------------------------
@@ -366,3 +368,100 @@ class TestStripAIDescriptionsStep:
         assert "IMAGE_RECT" in ctx.markdown
         assert "img_p001_01.png" in ctx.markdown
         assert "AI description" not in ctx.markdown
+
+
+# ---------------------------------------------------------------------------
+# resolve_pages_per_chunk() tests
+# ---------------------------------------------------------------------------
+
+
+def _write_manifest(chunks_dir: Path, pages_per_chunk: int = 20) -> None:
+    """Write a minimal manifest.json into a .chunks/ directory."""
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    manifest = Manifest(
+        pdf_mtime=1707321600.0,
+        pdf_size=4096,
+        total_pages=40,
+        pages_per_chunk=pages_per_chunk,
+        max_pages=None,
+        model_id="claude-test-1",
+        num_chunks=2,
+    )
+    from dataclasses import asdict
+    (chunks_dir / "manifest.json").write_text(
+        json.dumps(asdict(manifest), indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+class TestResolvePagesPerChunk:
+    """Tests for ConversionPipeline.resolve_pages_per_chunk()."""
+
+    def test_no_workdir_returns_requested(self, tmp_path: Path):
+        """When no workdir exists, returns the requested value."""
+        output_file = tmp_path / "doc.md"
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        assert pipeline.resolve_pages_per_chunk(10) == 10
+
+    def test_manifest_matches_returns_silently(self, tmp_path: Path):
+        """When manifest matches requested value, returns it (no warning)."""
+        output_file = tmp_path / "doc.md"
+        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=15)
+
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        assert pipeline.resolve_pages_per_chunk(15) == 15
+
+    def test_manifest_mismatch_returns_manifest_value(self, tmp_path: Path):
+        """When manifest differs, returns the manifest value."""
+        output_file = tmp_path / "doc.md"
+        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=20)
+
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        assert pipeline.resolve_pages_per_chunk(10) == 20
+
+    def test_manifest_mismatch_logs_warning(self, tmp_path: Path, caplog):
+        """When manifest differs, a warning is logged."""
+        output_file = tmp_path / "doc.md"
+        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=20)
+
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        import logging
+        with caplog.at_level(logging.WARNING, logger="pipeline"):
+            pipeline.resolve_pages_per_chunk(10)
+
+        assert any(
+            "pages_per_chunk=20" in msg and "requested: 10" in msg
+            for msg in caplog.messages
+        )
+
+    def test_corrupt_manifest_returns_requested(self, tmp_path: Path):
+        """Corrupt manifest is treated as missing; returns requested."""
+        output_file = tmp_path / "doc.md"
+        chunks_dir = tmp_path / "doc.chunks"
+        chunks_dir.mkdir()
+        (chunks_dir / "manifest.json").write_text("bad json", encoding="utf-8")
+
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        assert pipeline.resolve_pages_per_chunk(10) == 10
+
+    def test_force_bypasses_manifest(self, tmp_path: Path):
+        """With force=True, returns requested value even if manifest differs."""
+        output_file = tmp_path / "doc.md"
+        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=20)
+
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        assert pipeline.resolve_pages_per_chunk(10, force=True) == 10
+
+    def test_force_no_warning(self, tmp_path: Path, caplog):
+        """With force=True, no warning is logged even on mismatch."""
+        output_file = tmp_path / "doc.md"
+        _write_manifest(tmp_path / "doc.chunks", pages_per_chunk=20)
+
+        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        import logging
+        with caplog.at_level(logging.WARNING, logger="pipeline"):
+            pipeline.resolve_pages_per_chunk(10, force=True)
+
+        assert not any(
+            "pages_per_chunk" in msg for msg in caplog.messages
+        )
