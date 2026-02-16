@@ -13,6 +13,7 @@ Built-in steps:
 
 - :class:`MergeContinuedTablesStep` — merges split tables.
 - :class:`ExtractImagesStep` — renders and injects images.
+- :class:`StripAIDescriptionsStep` — removes AI-generated image descriptions.
 - :class:`ValidateStep` — runs quality checks.
 
 Also provides :meth:`ConversionPipeline.remerge` for re-running merge +
@@ -21,13 +22,17 @@ steps + write from cached chunks without any API calls.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from pdf2md_claude.converter import ConversionResult, PdfConverter
 from pdf2md_claude.images import ImageExtractor, ImageMode
+from pdf2md_claude.markers import IMAGE_AI_DESCRIPTION_BLOCK_RE
 from pdf2md_claude.merger import merge_chunks, merge_continued_tables
 from pdf2md_claude.models import DocumentUsageStats
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
@@ -37,6 +42,24 @@ _log = logging.getLogger("pipeline")
 
 _IMAGE_DIR_SUFFIX = ".images"
 """Suffix appended to the output stem for the extracted-images directory."""
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-level helpers (no API context needed)
+# ---------------------------------------------------------------------------
+
+
+def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path:
+    """Resolve output file path for a given PDF.
+
+    *suffix* is inserted between the stem and ``.md`` extension
+    (e.g. ``"_first10"`` when ``--max-pages`` is used, or ``""``).
+
+    Default: Markdown file is placed next to the source PDF.
+    With *output_dir*: all output goes to the specified directory.
+    """
+    base = output_dir if output_dir else pdf_path.parent
+    return base / f"{pdf_path.stem}{suffix}.md"
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +171,28 @@ class ExtractImagesStep:
         ctx.markdown = extractor.extract_and_inject(ctx.markdown)
 
 
+_CONSECUTIVE_BLANK_LINES_RE = re.compile(r"\n{3,}")
+"""Regex matching 3+ consecutive newlines (used to collapse blanks after stripping)."""
+
+
+@dataclass
+class StripAIDescriptionsStep:
+    """Strip AI-generated image description blocks from the markdown.
+
+    Removes content between ``IMAGE_AI_GENERATED_DESCRIPTION_BEGIN``
+    and ``IMAGE_AI_GENERATED_DESCRIPTION_END`` markers (inclusive).
+    Collapses any orphaned blank lines left by the removal.
+    """
+
+    @property
+    def name(self) -> str:
+        return "strip AI descriptions"
+
+    def run(self, ctx: ProcessingContext) -> None:
+        ctx.markdown = IMAGE_AI_DESCRIPTION_BLOCK_RE.sub("", ctx.markdown)
+        ctx.markdown = _CONSECUTIVE_BLANK_LINES_RE.sub("\n\n", ctx.markdown)
+
+
 @dataclass
 class ValidateStep:
     """Run validation checks on the converted markdown.
@@ -196,6 +241,8 @@ class PipelineResult:
     validation: ValidationResult
     cached_chunks: int
     fresh_chunks: int
+    step_timings: dict[str, float] = field(default_factory=dict)
+    """Per-step execution time in seconds (step name -> elapsed)."""
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +253,7 @@ class PipelineResult:
 class ConversionPipeline:
     """Orchestrates the full single-document conversion pipeline.
 
+    Created per document with the source PDF path and target output file.
     Holds an ordered list of :class:`ProcessingStep` objects that are
     executed after chunk merging.  Provides :meth:`convert` (full
     API-based conversion) and :meth:`remerge` (re-merge from cached
@@ -218,20 +266,53 @@ class ConversionPipeline:
             ExtractImagesStep(image_mode=ImageMode.AUTO, render_dpi=600),
             ValidateStep(),
         ]
-        pipeline = ConversionPipeline(steps)
-        result = pipeline.convert(converter, pdf_path, output_file, pages_per_chunk=10)
+        pipeline = ConversionPipeline(steps, pdf_path, output_file)
+        result = pipeline.convert(converter, pages_per_chunk=10)
     """
 
-    def __init__(self, steps: list[ProcessingStep]) -> None:
+    def __init__(
+        self,
+        steps: list[ProcessingStep],
+        pdf_path: Path,
+        output_file: Path,
+    ) -> None:
         self._steps = steps
+        self._pdf_path = pdf_path
+        self._output_file = output_file
+        self._work_dir_path = output_file.with_suffix(".chunks")
 
     # -- public API --------------------------------------------------------
+
+    def needs_conversion(
+        self,
+        force: bool = False,
+        model_id: str | None = None,
+    ) -> bool:
+        """Check if the PDF needs to be converted.
+
+        Args:
+            force: If True, always reconvert.
+            model_id: If provided, also check the cached manifest for model
+                staleness.  When the output file exists but was produced by a
+                different model, return ``True`` (needs reconversion).
+        """
+        if force or not self._output_file.exists():
+            return True
+        # Output exists -- check manifest for model staleness.
+        if model_id is not None:
+            manifest_path = self._work_dir_path / "manifest.json"
+            if manifest_path.exists():
+                try:
+                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if data.get("model_id") != model_id:
+                        return True
+                except (json.JSONDecodeError, KeyError):
+                    return True
+        return False
 
     def convert(
         self,
         converter: PdfConverter,
-        pdf_path: Path,
-        output_file: Path,
         pages_per_chunk: int,
         max_pages: int | None = None,
         force: bool = False,
@@ -240,7 +321,7 @@ class ConversionPipeline:
 
         Steps:
 
-        1. Create ``WorkDir`` from ``output_file.with_suffix(".chunks")``.
+        1. Create ``WorkDir`` from the stored output path.
         2. If ``force``: invalidate all cached chunks.
         3. Convert via :meth:`PdfConverter.convert` (chunked, with disk resume).
         4. Merge chunks by page markers.
@@ -249,8 +330,6 @@ class ConversionPipeline:
 
         Args:
             converter: Configured PDF converter.
-            pdf_path: Path to the source PDF.
-            output_file: Path for the output Markdown file.
             pages_per_chunk: Pages per conversion chunk.
             max_pages: Optional page cap for debugging.
             force: If True, discard cached chunks and reconvert.
@@ -259,7 +338,7 @@ class ConversionPipeline:
             :class:`PipelineResult` with stats, validation, and output path.
         """
         # 1. Create work directory.
-        work_dir = WorkDir(output_file.with_suffix(".chunks"))
+        work_dir = WorkDir(self._work_dir_path)
 
         # 2. Force invalidation if requested.
         if force:
@@ -267,36 +346,27 @@ class ConversionPipeline:
 
         # 3. Convert (chunked, with disk resume).
         result: ConversionResult = converter.convert(
-            pdf_path, work_dir, pages_per_chunk, max_pages=max_pages,
+            self._pdf_path, work_dir, pages_per_chunk, max_pages=max_pages,
         )
 
         # 4–6. Merge, run steps, write.
         parts = [cr.markdown for cr in result.chunks]
-        ctx = self._process(parts, pdf_path, output_file)
+        ctx, step_timings = self._process(parts)
 
         return PipelineResult(
             stats=result.stats,
-            output_file=output_file,
+            output_file=self._output_file,
             validation=ctx.validation,
             cached_chunks=result.cached_chunks,
             fresh_chunks=result.fresh_chunks,
+            step_timings=step_timings,
         )
 
-    def remerge(
-        self,
-        output_file: Path,
-        pdf_path: Path | None = None,
-    ) -> PipelineResult:
+    def remerge(self) -> PipelineResult:
         """Re-run merge + steps + write from cached chunks on disk.
 
         No API calls are made.  Useful for iterating on merge/post-processing
         logic after a conversion has already populated the ``.chunks/`` dir.
-
-        Args:
-            output_file: Path for the output Markdown file.  The ``.chunks/``
-                directory is derived from this path.
-            pdf_path: Optional path to the source PDF.  When provided, enables
-                per-page fidelity checking and image extraction.
 
         Returns:
             :class:`PipelineResult` with validation results and output path.
@@ -304,7 +374,7 @@ class ConversionPipeline:
         Raises:
             RuntimeError: If the ``.chunks/`` directory or manifest is missing.
         """
-        work_dir = WorkDir(output_file.with_suffix(".chunks"))
+        work_dir = WorkDir(self._work_dir_path)
 
         if not work_dir.path.exists():
             raise RuntimeError(
@@ -327,14 +397,14 @@ class ConversionPipeline:
         parts = [work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
 
         # 3–5. Merge, run steps, write.
-        ctx = self._process(parts, pdf_path, output_file)
+        ctx, step_timings = self._process(parts)
 
         # Load stats from cache if available (for display purposes).
         stats = work_dir.load_stats()
         if stats is None:
             # Minimal stats when stats.json is missing.
             stats = DocumentUsageStats(
-                doc_name=output_file.stem,
+                doc_name=self._output_file.stem,
                 pages=0, chunks=num_chunks,
                 input_tokens=0, output_tokens=0,
                 cache_creation_tokens=0, cache_read_tokens=0,
@@ -343,10 +413,11 @@ class ConversionPipeline:
 
         return PipelineResult(
             stats=stats,
-            output_file=output_file,
+            output_file=self._output_file,
             validation=ctx.validation,
             cached_chunks=num_chunks,
             fresh_chunks=0,
+            step_timings=step_timings,
         )
 
     # -- internal methods --------------------------------------------------
@@ -363,11 +434,21 @@ class ConversionPipeline:
             return merge_chunks(parts)
         return parts[0] if parts else ""
 
-    def _run_steps(self, ctx: ProcessingContext) -> None:
-        """Execute all processing steps in order."""
+    def _run_steps(self, ctx: ProcessingContext) -> dict[str, float]:
+        """Execute all processing steps in order.
+
+        Returns:
+            Dict mapping step name to elapsed time in seconds.
+        """
+        timings: dict[str, float] = {}
         for step in self._steps:
             _log.info("  Step: %s...", step.name)
+            t0 = time.monotonic()
             step.run(ctx)
+            elapsed = time.monotonic() - t0
+            timings[step.name] = elapsed
+            _log.debug("  Step: %s done (%.2fs)", step.name, elapsed)
+        return timings
 
     def _write(self, ctx: ProcessingContext) -> None:
         """Write the final markdown to disk."""
@@ -381,27 +462,23 @@ class ConversionPipeline:
     def _process(
         self,
         parts: list[str],
-        pdf_path: Path | None,
-        output_file: Path,
-    ) -> ProcessingContext:
+    ) -> tuple[ProcessingContext, dict[str, float]]:
         """Merge chunks, run all steps, and write the output file.
 
         Shared logic between :meth:`convert` and :meth:`remerge`.
 
         Args:
             parts: List of markdown strings from chunks.
-            pdf_path: Path to the source PDF (``None`` when unavailable).
-            output_file: Target path for the output Markdown file.
 
         Returns:
-            The :class:`ProcessingContext` after all steps have run.
+            Tuple of (context after all steps, per-step timings dict).
         """
         markdown = self._merge(parts)
         ctx = ProcessingContext(
             markdown=markdown,
-            pdf_path=pdf_path,
-            output_file=output_file,
+            pdf_path=self._pdf_path,
+            output_file=self._output_file,
         )
-        self._run_steps(ctx)
+        step_timings = self._run_steps(ctx)
         self._write(ctx)
-        return ctx
+        return ctx, step_timings

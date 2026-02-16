@@ -17,19 +17,22 @@ import sys
 import time
 from pathlib import Path
 
+import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
 from pdf2md_claude.client import create_client
-from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter, needs_conversion
+from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter
 from pdf2md_claude.images import ImageMode
-from pdf2md_claude.models import MODELS, DocumentUsageStats, format_summary
+from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
 from pdf2md_claude.pipeline import (
     ConversionPipeline,
     ExtractImagesStep,
     MergeContinuedTablesStep,
     ProcessingStep,
+    StripAIDescriptionsStep,
     ValidateStep,
+    resolve_output,
 )
 from pdf2md_claude.prompt import SYSTEM_PROMPT
 from pdf2md_claude.rules import (
@@ -85,24 +88,6 @@ def setup_colorized_logging():
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path:
-    """Resolve output file path for a given PDF.
-
-    *suffix* is inserted between the stem and ``.md`` extension
-    (e.g. ``"_first10"`` when ``--max-pages`` is used, or ``""``).
-
-    Default: Markdown file is placed next to the source PDF.
-    With --output-dir: all output goes to the specified directory.
-    """
-    base = output_dir if output_dir else pdf_path.parent
-    return base / f"{pdf_path.stem}{suffix}.md"
-
-
-# ---------------------------------------------------------------------------
 # Main — helpers
 # ---------------------------------------------------------------------------
 
@@ -130,6 +115,7 @@ Examples:
   %(prog)s --rules my_rules.txt --show-prompt    Show merged prompt
         """,
     )
+    # -- Top-level arguments ---------------------------------------------------
     parser.add_argument(
         "pdfs",
         nargs="*",
@@ -154,28 +140,23 @@ Examples:
              "(also clears cached chunks)",
     )
     parser.add_argument(
-        "--remerge",
-        action="store_true",
-        help="Re-run merge + validate + write from cached chunks "
-             "(no API calls, no ANTHROPIC_API_KEY needed). "
-             "Useful for debugging merge/post-processing logic.",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
-    parser.add_argument(
-        "--max-pages",
-        type=int,
-        metavar="N",
-        help="Convert only the first N pages using the full pipeline "
-             "(chunked, with title extraction and merging). Useful for debugging",
+
+    # -- Conversion group ------------------------------------------------------
+    conv_group = parser.add_argument_group(
+        "conversion",
+        "Control the PDF-to-Markdown conversion process.",
     )
-    parser.add_argument(
-        "--cache",
-        action="store_true",
-        help="Enable prompt caching (1h TTL) on system prompt and PDF content. "
-             "Reduces cost on re-runs with the same PDF chunks (useful for "
-             "debugging prompts/pipelines). First run pays ~2x write cost, "
-             "subsequent runs within 1h pay ~0.1x read cost.",
+    conv_group.add_argument(
+        "--model",
+        choices=list(MODELS.keys()),
+        default=DEFAULT_MODEL_ALIAS,
+        help="Claude model to use (default: %(default)s).",
     )
-    parser.add_argument(
+    conv_group.add_argument(
         "--pages-per-chunk",
         type=int,
         default=DEFAULT_PAGES_PER_CHUNK,
@@ -184,14 +165,51 @@ Examples:
              "Smaller values improve quality but increase API calls. "
              "Must not exceed the API limit of 100 pages per request.",
     )
-    parser.add_argument(
+    conv_group.add_argument(
+        "--max-pages",
+        type=int,
+        metavar="N",
+        help="Convert only the first N pages using the full pipeline "
+             "(chunked, with title extraction and merging). Useful for debugging",
+    )
+    conv_group.add_argument(
+        "--cache",
+        action="store_true",
+        help="Enable prompt caching (1h TTL) on system prompt and PDF content. "
+             "Reduces cost on re-runs with the same PDF chunks (useful for "
+             "debugging prompts/pipelines). First run pays ~2x write cost, "
+             "subsequent runs within 1h pay ~0.1x read cost.",
+    )
+    conv_group.add_argument(
+        "--remerge",
+        action="store_true",
+        help="Re-run merge + validate + write from cached chunks "
+             "(no API calls, no ANTHROPIC_API_KEY needed). "
+             "Useful for debugging merge/post-processing logic.",
+    )
+    conv_group.add_argument(
+        "--retries",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Max attempts per chunk on transient API/network errors "
+             "(default: %(default)s). Uses exponential backoff 1-30s. "
+             "Set to 1 to disable retry.",
+    )
+
+    # -- Image extraction group ------------------------------------------------
+    img_group = parser.add_argument_group(
+        "image extraction",
+        "Control how images are extracted from PDF and injected into Markdown.",
+    )
+    img_group.add_argument(
         "--no-images",
         action="store_true",
         help="Skip image extraction. By default, IMAGE_RECT bounding boxes "
              "emitted by Claude are rendered from the PDF and injected as "
              "image files alongside the Markdown output.",
     )
-    parser.add_argument(
+    img_group.add_argument(
         "--image-mode",
         choices=[m.value for m in ImageMode],
         default=ImageMode.AUTO.value,
@@ -201,7 +219,7 @@ Examples:
              "bounding box directly; 'debug' renders all variants "
              "side-by-side in an HTML table (default: %(default)s).",
     )
-    parser.add_argument(
+    img_group.add_argument(
         "--image-dpi",
         type=int,
         default=DEFAULT_IMAGE_DPI,
@@ -209,13 +227,28 @@ Examples:
         help="DPI for page-region rendering — vector diagrams, composites, "
              f"and snap/bbox modes (default: {DEFAULT_IMAGE_DPI}).",
     )
-    parser.add_argument(
-        "--model",
-        choices=list(MODELS.keys()),
-        default=DEFAULT_MODEL_ALIAS,
-        help="Claude model to use (default: %(default)s).",
+    img_group.add_argument(
+        "--strip-ai-descriptions",
+        action="store_true",
+        help="Remove AI-generated image description blocks from the output. "
+             "These are textual descriptions Claude generates for images, "
+             "wrapped in IMAGE_AI_GENERATED_DESCRIPTION markers.",
     )
-    parser.add_argument(
+
+    # -- Custom rules group ----------------------------------------------------
+    rules_group = parser.add_argument_group(
+        "custom rules",
+        "Customize the system prompt via rules files.",
+    )
+    rules_group.add_argument(
+        "--rules",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Custom rules file (replace/append/add rules). "
+             "Use -f to reconvert after changing rules.",
+    )
+    rules_group.add_argument(
         "--init-rules",
         type=Path,
         nargs="?",
@@ -225,24 +258,12 @@ Examples:
         help="Generate a rules template and exit "
              f"(default: {AUTO_RULES_FILENAME}).",
     )
-    parser.add_argument(
-        "--rules",
-        type=Path,
-        default=None,
-        metavar="FILE",
-        help="Custom rules file (replace/append/add rules). "
-             "Use -f to reconvert after changing rules.",
-    )
-    parser.add_argument(
+    rules_group.add_argument(
         "--show-prompt",
         action="store_true",
         help="Print the system prompt to stdout and exit.",
     )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
+
     return parser
 
 
@@ -287,10 +308,9 @@ def _process_pdf(
     pdf_path: Path,
     args: argparse.Namespace,
     *,
-    model: object,
-    client: object,
+    model: ModelConfig,
+    client: anthropic.Anthropic | None,
     pipeline: ConversionPipeline,
-    output_dir: Path | None,
     pages_per_chunk: int,
     rules_cache: dict[Path, str],
 ) -> DocumentUsageStats:
@@ -298,22 +318,21 @@ def _process_pdf(
 
     Raises on failure so the caller can count success/failure.
     """
-    suffix = f"_first{args.max_pages}" if args.max_pages else ""
-    output_file = resolve_output(pdf_path, suffix, output_dir)
-
     if args.remerge:
-        result = pipeline.remerge(output_file, pdf_path=pdf_path)
+        result = pipeline.remerge()
     else:
-        assert client is not None
+        if client is None:
+            raise RuntimeError("API client required for conversion (not remerge)")
         system_prompt = _resolve_rules(pdf_path, args.rules, rules_cache)
 
         converter = PdfConverter(
             client, model,
             use_cache=args.cache,
             system_prompt=system_prompt,
+            max_retries=args.retries,
         )
         result = pipeline.convert(
-            converter, pdf_path, output_file,
+            converter,
             pages_per_chunk=pages_per_chunk,
             max_pages=args.max_pages,
             force=args.force,
@@ -323,7 +342,7 @@ def _process_pdf(
 
 
 def _log_summary(
-    model: object,
+    model: ModelConfig,
     all_stats: list[DocumentUsageStats],
     total_elapsed: float,
     success: int,
@@ -385,13 +404,11 @@ def main() -> int:
         parser.print_help()
         return 0
 
-    # Argument validation.
+    # Argument validation (before logging is configured, use parser.error).
     if args.rules and args.remerge:
-        _log.error("--rules and --remerge cannot be used together")
-        return 1
+        parser.error("--rules and --remerge cannot be used together")
     if args.rules and not args.rules.is_file():
-        _log.error("Rules file not found: %s", args.rules)
-        return 1
+        parser.error(f"Rules file not found: {args.rules}")
 
     # Setup logging
     setup_colorized_logging()
@@ -464,9 +481,9 @@ def main() -> int:
                 image_mode=ImageMode(args.image_mode),
                 render_dpi=args.image_dpi,
             ))
+        if args.strip_ai_descriptions:
+            steps.append(StripAIDescriptionsStep())
         steps.append(ValidateStep())
-
-        pipeline = ConversionPipeline(steps)
 
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []
@@ -474,15 +491,15 @@ def main() -> int:
         failure = 0
         cached = 0
         rules_cache: dict[Path, str] = {}
+        suffix = f"_first{args.max_pages}" if args.max_pages else ""
 
         for pdf_path in pdf_paths:
             doc_name = pdf_path.stem
-            suffix = f"_first{args.max_pages}" if args.max_pages else ""
-            per_pdf_output_dir = output_dir if output_dir else pdf_path.parent
+            output_file = resolve_output(pdf_path, suffix, output_dir)
+            pipeline = ConversionPipeline(steps, pdf_path, output_file)
 
-            if not remerge and not needs_conversion(
-                pdf_path, per_pdf_output_dir, args.force,
-                suffix=suffix, model_id=model.model_id,
+            if not remerge and not pipeline.needs_conversion(
+                force=args.force, model_id=model.model_id,
             ):
                 _log.info("⊙ %s (cached)", doc_name)
                 cached += 1
@@ -496,7 +513,6 @@ def main() -> int:
                     model=model,
                     client=client,
                     pipeline=pipeline,
-                    output_dir=output_dir,
                     pages_per_chunk=pages_per_chunk,
                     rules_cache=rules_cache,
                 )
