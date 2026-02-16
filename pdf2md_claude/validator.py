@@ -7,6 +7,7 @@ Checks for common problems in Claude's PDF-to-Markdown conversion:
 - Heading sequence gaps (missing top-level sections)
 - Duplicate numbered headings (same section number appears more than once)
 - Non-monotonic or duplicate binary values in HTML tables
+- Table column-count consistency (rowspan/colspan mismatch detection)
 - Fabricated summaries (Claude inventing text to replace omitted content)
 - Per-page fidelity check against PDF source text (optional, needs PDF path)
 """
@@ -127,6 +128,7 @@ def validate_output(markdown: str) -> ValidationResult:
     _check_heading_sequence(markdown, result)
     _check_duplicate_headings(markdown, result)
     _check_binary_sequences(markdown, result)
+    _check_table_column_consistency(markdown, result)
 
     return result
 
@@ -567,6 +569,137 @@ def _check_duplicate_headings(markdown: str, result: ValidationResult) -> None:
 _BINARY_IN_TD_RE = re.compile(
     r"<td[^>]*>\s*([01]{4,8})b\s*</td>",
 )
+
+
+# ---------------------------------------------------------------------------
+# Table column-count consistency
+# ---------------------------------------------------------------------------
+
+# Extract all <tr>...</tr> blocks from a table.
+_TR_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
+
+# Extract <td> or <th> cells with their attributes.
+_CELL_RE = re.compile(r"<(td|th)\b([^>]*)>", re.IGNORECASE)
+
+# Extract colspan="N" or rowspan="N" from cell attributes.
+_COLSPAN_RE = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
+_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
+
+# Table title: **Table 6 – Something** — captures full title text.
+_TABLE_TITLE_RE = re.compile(
+    r"\*\*Table\s+(?:\d+|[A-Z]\.\d+)\s*[–—-]\s*([^*]+)\*\*"
+)
+
+
+def _find_table_title(markdown: str, table_start: int) -> str | None:
+    """Find the **Table N – Title** line preceding a <table> tag.
+
+    Searches backwards up to 200 characters before the table start position.
+    Returns the full bold title (e.g. "Table 6 – Application extended commands")
+    or None if not found.
+    """
+    search_start = max(0, table_start - 200)
+    preceding = markdown[search_start:table_start]
+    # Find the last **Table N – ...** in the preceding text.
+    match = None
+    for m in _TABLE_DEF_RE.finditer(preceding):
+        match = m
+    if match is None:
+        return None
+    # Return the table number portion (e.g. "Table 6").
+    return f"Table {match.group(1)}"
+
+
+def _compute_table_column_counts(table_html: str) -> list[int]:
+    """Compute effective column count for each row in an HTML table.
+
+    Uses a grid-based rowspan tracker: each column slot records how many
+    more rows it is occupied by an earlier rowspan cell.
+
+    Returns:
+        List of effective column counts, one per <tr> row.
+    """
+    rows = _TR_RE.findall(table_html)
+    if not rows:
+        return []
+
+    # rowspan_remaining[col] = number of additional rows this slot is
+    # occupied by a prior rowspan cell (0 = free).
+    rowspan_remaining: list[int] = []
+    counts: list[int] = []
+
+    for row_html in rows:
+        cells = _CELL_RE.findall(row_html)
+
+        col = 0  # current column pointer
+        # Expand rowspan tracker if needed (first row sets initial size).
+        # We'll grow it dynamically as we discover the width.
+
+        for _tag, attrs in cells:
+            # Skip past columns occupied by rowspans from previous rows.
+            while col < len(rowspan_remaining) and rowspan_remaining[col] > 0:
+                rowspan_remaining[col] -= 1
+                col += 1
+
+            colspan_m = _COLSPAN_RE.search(attrs)
+            rowspan_m = _ROWSPAN_RE.search(attrs)
+            colspan = int(colspan_m.group(1)) if colspan_m else 1
+            rowspan = int(rowspan_m.group(1)) if rowspan_m else 1
+
+            # Place this cell: it occupies 'colspan' columns starting at 'col'.
+            for c in range(col, col + colspan):
+                # Grow the tracker if we're beyond current size.
+                while c >= len(rowspan_remaining):
+                    rowspan_remaining.append(0)
+                # Mark additional rows (rowspan - 1) as occupied.
+                if rowspan > 1:
+                    rowspan_remaining[c] = rowspan - 1
+            col += colspan
+
+        # Skip past any trailing columns still occupied by rowspans.
+        while col < len(rowspan_remaining) and rowspan_remaining[col] > 0:
+            rowspan_remaining[col] -= 1
+            col += 1
+
+        counts.append(col)
+
+    return counts
+
+
+def _check_table_column_consistency(
+    markdown: str, result: ValidationResult
+) -> None:
+    """Check that every row in each HTML table has the same column count.
+
+    Parses colspan/rowspan attributes to compute the effective column count
+    per row.  Mismatches are reported as warnings with the table title
+    (if available) and the row index / counts involved.
+    """
+    for table_match in TABLE_BLOCK_RE.finditer(markdown):
+        table_html = table_match.group(0)
+        counts = _compute_table_column_counts(table_html)
+
+        if len(counts) < 2:
+            continue
+
+        # Use the maximum count as the expected column count (most rows
+        # agree on the correct width; mismatches are typically fewer).
+        expected = max(counts)
+
+        mismatches = [
+            (i, c) for i, c in enumerate(counts) if c != expected
+        ]
+        if not mismatches:
+            continue
+
+        title = _find_table_title(markdown, table_match.start())
+        label = title if title else "HTML table"
+
+        for row_idx, actual in mismatches:
+            result.warnings.append(
+                f"{label}: row {row_idx} has {actual} columns, "
+                f"expected {expected}"
+            )
 
 
 def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:

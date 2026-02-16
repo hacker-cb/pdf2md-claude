@@ -30,20 +30,20 @@ pip install git+https://github.com/hacker-cb/pdf2md-claude.git
 export ANTHROPIC_API_KEY="your-key-here"
 
 # Convert a single PDF (output: document.md next to the PDF)
-pdf2md-claude document.pdf
+pdf2md-claude convert document.pdf
 
 # Convert multiple PDFs
-pdf2md-claude doc1.pdf doc2.pdf
+pdf2md-claude convert doc1.pdf doc2.pdf
 
 # Convert all PDFs in a directory (shell glob)
-pdf2md-claude *.pdf
-pdf2md-claude docs/*.pdf
+pdf2md-claude convert *.pdf
+pdf2md-claude convert docs/*.pdf
 
 # Custom output directory
-pdf2md-claude *.pdf -o output/
+pdf2md-claude convert *.pdf -o output/
 
 # Also works via python -m
-python -m pdf2md_claude document.pdf
+python -m pdf2md_claude convert document.pdf
 ```
 
 ## Output
@@ -53,7 +53,6 @@ By default, Markdown files are written next to the source PDF:
 | Input | Output |
 |---|---|
 | `docs/document.pdf` | `docs/document.md` |
-| `docs/document.pdf --max-pages 5` | `docs/document_first5.md` |
 
 With `-o DIR`, all output goes to the specified directory.
 
@@ -68,26 +67,45 @@ Chunked conversion with context passing, deterministic merging, and validation:
 5. Extract and inject images from bounding-box markers (deterministic, no LLM)
 6. Validate output (page markers, tables, heading gaps, binary sequences, fabrication detection)
 
-## CLI Options
+## CLI Commands
+
+The CLI uses subcommands. Run `pdf2md-claude COMMAND --help` for full options.
 
 ```
-pdf2md-claude [OPTIONS] PDF [PDF ...]
+pdf2md-claude convert PDF [PDF ...]         Convert PDFs to Markdown
+pdf2md-claude remerge PDF [PDF ...]         Re-merge from cached chunks (no API)
+pdf2md-claude validate FILE [FILE ...]      Validate existing .md files (no API)
+pdf2md-claude show-prompt [--rules FILE]    Print the system prompt
+pdf2md-claude init-rules [PATH]             Generate a rules template
+```
 
-Positional:
-  PDF                  One or more PDF files to convert (supports shell globs)
+### convert options
 
-Options:
-  -o, --output-dir DIR Output directory (default: same directory as each PDF)
-  -v, --verbose        Enable verbose logging
-  -f, --force          Force reconversion even if output exists
-  --max-pages N        Convert only first N pages (useful for debugging)
-  --cache              Enable prompt caching (1h TTL, reduces re-run cost)
-  --pages-per-chunk N  Pages per conversion chunk (default: 10)
-  --no-images          Skip image extraction from bounding-box markers
-  --remerge            Re-merge from cached chunks (no API calls needed)
-  --init-rules [FILE]  Generate a rules template (default: .pdf2md.rules)
-  --rules FILE         Custom rules file (replace/append/add rules)
-  --show-prompt        Print the system prompt to stdout and exit
+```
+  -o, --output-dir DIR   Output directory (default: same directory as each PDF)
+  -v, --verbose          Enable verbose logging
+  -f, --force            Force reconversion even if output exists
+  --model MODEL          Claude model to use (default: opus)
+  --max-pages N          Convert only first N pages (useful for debugging)
+  --cache                Enable prompt caching (1h TTL, reduces re-run cost)
+  --pages-per-chunk N    Pages per conversion chunk (default: 10)
+  --retries N            Max retries per chunk on transient errors (default: 10)
+  --rules FILE           Custom rules file (replace/append/add rules)
+  --no-images            Skip image extraction from bounding-box markers
+  --image-mode MODE      Image extraction mode (auto/snap/bbox/debug)
+  --image-dpi DPI        DPI for page-region rendering (default: 600)
+  --strip-ai-descriptions  Remove AI-generated image descriptions
+```
+
+### remerge options
+
+```
+  -o, --output-dir DIR   Output directory
+  -v, --verbose          Enable verbose logging
+  --no-images            Skip image extraction
+  --image-mode MODE      Image extraction mode
+  --image-dpi DPI        DPI for rendering
+  --strip-ai-descriptions  Remove AI-generated image descriptions
 ```
 
 Run without arguments to display help.
@@ -104,17 +122,17 @@ will be applied automatically (no `--rules` flag needed).
 
 ```bash
 # Generate a fully commented template
-pdf2md-claude --init-rules
+pdf2md-claude init-rules
 
 # Edit .pdf2md.rules to your needs, then convert
-pdf2md-claude document.pdf
+pdf2md-claude convert document.pdf
 
 # Or use an explicit rules file
-pdf2md-claude document.pdf --rules my_rules.txt
+pdf2md-claude convert document.pdf --rules my_rules.txt
 
 # Preview the merged system prompt
-pdf2md-claude --show-prompt
-pdf2md-claude --rules my_rules.txt --show-prompt
+pdf2md-claude show-prompt
+pdf2md-claude show-prompt --rules my_rules.txt
 ```
 
 ### Directives
@@ -175,6 +193,7 @@ pdf2md-claude/
 │   └── workdir.py              # Chunk persistence, resume, and work directory management
 ├── tests/                      # Unit tests
 │   ├── __init__.py
+│   ├── test_cli.py
 │   ├── test_converter.py
 │   ├── test_images.py
 │   ├── test_markers.py
@@ -221,12 +240,12 @@ pytest tests/ -v
 Enable verbose logging:
 
 ```bash
-pdf2md-claude -v document.pdf
+pdf2md-claude convert -v document.pdf
 ```
 
 Use `--cache` to avoid re-paying for PDF content on repeated runs during
 prompt/pipeline development:
 
 ```bash
-pdf2md-claude --cache document.pdf --max-pages 5
+pdf2md-claude convert --cache document.pdf --max-pages 5
 ```

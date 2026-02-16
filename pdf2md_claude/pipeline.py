@@ -49,17 +49,14 @@ _IMAGE_DIR_SUFFIX = ".images"
 # ---------------------------------------------------------------------------
 
 
-def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path:
+def resolve_output(pdf_path: Path, output_dir: Path | None) -> Path:
     """Resolve output file path for a given PDF.
-
-    *suffix* is inserted between the stem and ``.md`` extension
-    (e.g. ``"_first10"`` when ``--max-pages`` is used, or ``""``).
 
     Default: Markdown file is placed next to the source PDF.
     With *output_dir*: all output goes to the specified directory.
     """
     base = output_dir if output_dir else pdf_path.parent
-    return base / f"{pdf_path.stem}{suffix}.md"
+    return base / f"{pdf_path.stem}.md"
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +280,18 @@ class ConversionPipeline:
 
     # -- public API --------------------------------------------------------
 
+    def load_cached_stats(self) -> DocumentUsageStats | None:
+        """Load previously saved usage stats from the work directory.
+
+        Returns:
+            ``DocumentUsageStats`` if ``stats.json`` exists and is valid,
+            ``None`` otherwise.
+        """
+        work_dir = WorkDir(self._work_dir_path)
+        if not work_dir.path.exists():
+            return None
+        return work_dir.load_stats()
+
     def needs_conversion(
         self,
         force: bool = False,
@@ -382,9 +391,13 @@ class ConversionPipeline:
                 f"Run a full conversion first before using --remerge."
             )
 
-        # 1. Discover chunk count from manifest.
+        # 1. Discover chunk count and total pages from manifest.
         num_chunks = work_dir.chunk_count()
-        _log.info("  Re-merging from %d cached chunks...", num_chunks)
+        total_pages = work_dir.total_pages()
+        _log.info(
+            "  Re-merging from %d cached chunks (%d pages)...",
+            num_chunks, total_pages,
+        )
 
         # 2. Verify all chunks exist and load markdown.
         missing = [i for i in range(num_chunks) if not work_dir.has_chunk(i)]

@@ -18,7 +18,7 @@ Then use the .venv for all commands:
 
 ```bash
 ./.venv/bin/python -m pytest tests/ -v
-./.venv/bin/python -m pdf2md_claude document.pdf
+./.venv/bin/python -m pdf2md_claude convert document.pdf
 ```
 
 ## Key Architecture
@@ -27,7 +27,7 @@ All source modules live in `pdf2md_claude/`, tests in `tests/`.
 
 Start from `cli.py` to understand the entry point, then `pipeline.py` for single-document orchestration:
 
-- `pdf2md_claude/cli.py` -- Entry point. Parses args, builds the processing step chain from CLI flags, creates a `ConversionPipeline` per PDF (with resolved paths), creates `PdfConverter`, delegates each to `pipeline.convert()` / `pipeline.remerge()`, prints summary.
+- `pdf2md_claude/cli.py` -- Entry point. Uses subcommands (`convert`, `remerge`, `validate`, `show-prompt`, `init-rules`). Each subcommand has its own handler and only accepts compatible arguments. Shared arg groups (verbose, output, image) are defined via argparse parent parsers. The `convert` handler builds the processing step chain, creates `PdfConverter`, and delegates to `pipeline.convert()`. The `remerge` handler calls `pipeline.remerge()` without an API client.
 - `pdf2md_claude/pipeline.py` -- Single-document orchestration via `ConversionPipeline` class. Created per document with `pdf_path` and `output_file`; derives work directory and image directory paths from `output_file`. Uses a step-based architecture: after chunk merging, a configurable list of `ProcessingStep` objects is executed in order via `_run_steps()`. Built-in steps: `MergeContinuedTablesStep`, `ExtractImagesStep`, `ValidateStep`. Both `convert()` and `remerge()` share the `_process()` method (merge + steps + write). Instance method `needs_conversion()` checks staleness. Free function `resolve_output()` computes the output path before pipeline construction. Key types: `ProcessingContext`, `ProcessingStep` (protocol), `ConversionPipeline`, `PipelineResult`.
 - `pdf2md_claude/workdir.py` -- Chunk persistence and resume. Manages a `.chunks/` directory with manifest-based staleness detection. All cross-chunk data flows through disk (never in memory). Key types: `Manifest`, `ChunkUsageStats`, `WorkDir`.
 - `pdf2md_claude/converter.py` -- Chunked PDF conversion via `PdfConverter` class. Holds API context (client, model, caching, system prompt); `convert()` splits PDF into chunks with context passing. Each chunk is saved to disk immediately via `WorkDir`. On resume, cached chunks are skipped. `_remap_page_markers()` remaps both BEGIN and END markers. Key types: `PdfConverter`, `ChunkResult`, `ConversionResult`.
@@ -40,7 +40,7 @@ Start from `cli.py` to understand the entry point, then `pipeline.py` for single
 - `pdf2md_claude/models.py` -- Model configs, pricing, `DocumentUsageStats`, cost calculation.
 - `pdf2md_claude/client.py` -- Anthropic API client setup.
 
-Tests: `tests/test_converter.py`, `tests/test_images.py`, `tests/test_markers.py`, `tests/test_pipeline.py`, `tests/test_rules.py`, `tests/test_table_merger.py`, `tests/test_validator.py`, `tests/test_workdir.py`.
+Tests: `tests/test_cli.py`, `tests/test_converter.py`, `tests/test_images.py`, `tests/test_markers.py`, `tests/test_pipeline.py`, `tests/test_rules.py`, `tests/test_table_merger.py`, `tests/test_validator.py`, `tests/test_workdir.py`.
 
 ## Code Conventions
 
@@ -60,14 +60,14 @@ End-to-end with sample PDF (requires `ANTHROPIC_API_KEY`):
 
 ```bash
 # Fresh conversion (4-page sample, 1 page/chunk = 4 API calls)
-./.venv/bin/python -m pdf2md_claude samples/multi_page_table.pdf --pages-per-chunk 1 -v -f
+./.venv/bin/python -m pdf2md_claude convert samples/multi_page_table.pdf --pages-per-chunk 1 -v -f
 
 # Verify work directory was created
 ls samples/multi_page_table.chunks/
 # Expected: manifest.json, stats.json, chunk_01..04 .md/_context.md/_meta.json
 
 # Resume test: run again without -f (should skip all 4 chunks)
-./.venv/bin/python -m pdf2md_claude samples/multi_page_table.pdf --pages-per-chunk 1 -v
+./.venv/bin/python -m pdf2md_claude convert samples/multi_page_table.pdf --pages-per-chunk 1 -v
 ```
 
 The `samples/` directory contains `multi_page_table.pdf` (4 pages) for quick pipeline testing.

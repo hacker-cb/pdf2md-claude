@@ -123,24 +123,30 @@ _RULE_TABLES = f"""\
    - Use `<thead>` for header rows and `<tbody>` for data rows.
    - Use `<th>` for header cells and `<td>` for data cells.
    - Use `rowspan` and `colspan` for merged cells.
-   - **Faithful structure** (CRITICAL): Reproduce the EXACT row and cell layout \
-of the original table. If the PDF shows 3 header rows, output 3 `<tr>` rows in \
-`<thead>` — do NOT collapse multiple header rows into one row. Preserve every \
-blank/empty cell as an empty `<td></td>` or `<th></th>`. Keep empty separator \
-rows as `<tr><td colspan="..."></td></tr>` — do NOT remove them. Use `rowspan` \
-for cells that visually span multiple rows in the original.
-   - Preserve checkmarks (use ✓), footnote markers (a, b, c, etc.), and ALL \
-special symbols exactly as they appear.
-   - Column-count consistency: ensure the total column count is IDENTICAL for \
-every row. A cell with colspan="3" counts as 3. A cell with rowspan="N" \
-in row R occupies that column in rows R through R+N-1. Verify your column \
-math before outputting the table.
+   - **Faithful structure** (CRITICAL): Reproduce the 100% original table \
+structure with exact `colspan`/`rowspan` values.
+      - If the PDF shows N header rows, output N `<tr>` rows in `<thead>` — \
+do NOT collapse or merge header rows.
+      - Use `rowspan` for cells that span multiple rows, `colspan` for \
+cells that span multiple columns. A single cell can have BOTH attributes \
+at the same time (e.g. `<th rowspan="2" colspan="3">`).
+      - Preserve every blank/empty cell as `<td></td>` or `<th></th>`.
+      - Keep empty separator rows — do NOT remove them.
+      - The total column count MUST be identical for every row. A cell with \
+`colspan="3"` counts as 3; a cell with `rowspan="N"` in row R occupies \
+that column in rows R through R+N-1.
+      - **Self-check**: compute the total column count from the full table \
+(any row may use colspan/rowspan). Verify that EVERY row — header, data, \
+and separator — resolves to the same total. Fix mismatches before \
+outputting.
    - **Completeness** (CRITICAL): You MUST convert EVERY table completely, \
 no matter how large or complex. NEVER replace a table with a summary, \
 description, or "see below" reference. If a table has 100 rows, output all \
 100 rows.
-   - Inside tables use `<em>` (not `<i>`) for italics, and `<br>` (single, \
-not double `<br><br>`) for line breaks within cells.
+   - **Cell formatting**: Preserve checkmarks (use ✓), footnote markers \
+(a, b, c, etc.), and ALL special symbols exactly as they appear. Use \
+`<em>` (not `<i>`) for italics, and `<br>` (single, not double \
+`<br><br>`) for line breaks within cells.
    - **Continued tables**: If a table on the current page is a continuation \
 of a table from a previous page (the PDF shows "(continued)" in the header, \
 or the table has the same column structure and title as one from a prior \
@@ -219,10 +225,6 @@ _DEFAULT_REGISTRY: tuple[tuple[str, str], ...] = (
     ("images",       _RULE_IMAGES),         # 8. content: images (diagrams/figures/charts)
 )
 
-# Backward-compatible unnamed rule list, derived from the registry.
-_RULES: list[str] = [text for _, text in _DEFAULT_REGISTRY]
-
-
 def build_system_prompt(
     rules: list[str],
     preamble_body: str = _PREAMBLE_BODY,
@@ -246,7 +248,7 @@ def build_system_prompt(
     )
 
 
-SYSTEM_PROMPT = build_system_prompt(_RULES)
+SYSTEM_PROMPT = build_system_prompt([text for _, text in _DEFAULT_REGISTRY])
 
 
 # ---------------------------------------------------------------------------
