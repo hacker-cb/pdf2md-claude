@@ -19,11 +19,18 @@ from pathlib import Path
 
 import colorlog
 
+from pdf2md_claude import __version__
 from pdf2md_claude.client import create_client
-from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, needs_conversion
+from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter, needs_conversion
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, DocumentUsageStats, format_summary
-from pdf2md_claude.pipeline import convert_document, remerge_document
+from pdf2md_claude.pipeline import (
+    ConversionPipeline,
+    ExtractImagesStep,
+    MergeContinuedTablesStep,
+    ProcessingStep,
+    ValidateStep,
+)
 from pdf2md_claude.prompt import SYSTEM_PROMPT
 from pdf2md_claude.rules import (
     AUTO_RULES_FILENAME,
@@ -85,6 +92,9 @@ def setup_colorized_logging():
 def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path:
     """Resolve output file path for a given PDF.
 
+    *suffix* is inserted between the stem and ``.md`` extension
+    (e.g. ``"_first10"`` when ``--max-pages`` is used, or ``""``).
+
     Default: Markdown file is placed next to the source PDF.
     With --output-dir: all output goes to the specified directory.
     """
@@ -93,12 +103,12 @@ def resolve_output(pdf_path: Path, suffix: str, output_dir: Path | None) -> Path
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Main — helpers
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
-    """Main entry point."""
+def _build_parser() -> argparse.ArgumentParser:
+    """Build and return the CLI argument parser."""
     parser = argparse.ArgumentParser(
         description="Convert PDF documents to Markdown using Claude's native PDF API",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -228,6 +238,125 @@ Examples:
         action="store_true",
         help="Print the system prompt to stdout and exit.",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    return parser
+
+
+def _resolve_rules(
+    pdf_path: Path,
+    explicit_rules: Path | None,
+    rules_cache: dict[Path, str],
+) -> str | None:
+    """Resolve the system prompt for a single PDF.
+
+    Checks the explicit ``--rules`` path first, then auto-discovers
+    ``.pdf2md.rules`` next to the PDF.  Results are cached by resolved
+    path so that multiple PDFs sharing the same rules file don't re-parse.
+
+    Returns:
+        Custom system prompt string, or ``None`` if no rules apply.
+    """
+    rules_path = explicit_rules
+    if not rules_path:
+        auto_path = pdf_path.parent / AUTO_RULES_FILENAME
+        if auto_path.is_file():
+            rules_path = auto_path
+
+    if not rules_path:
+        return None
+
+    resolved = rules_path.resolve()
+    if resolved not in rules_cache:
+        parsed = parse_rules_file(resolved)
+        rules_cache[resolved] = build_custom_system_prompt(parsed)
+        _log.info(
+            "Custom rules (%s): %d replaced, %d appended, "
+            "%d inserted, %d added",
+            rules_path, len(parsed.replacements),
+            len(parsed.appends), len(parsed.insertions),
+            len(parsed.extras),
+        )
+    return rules_cache[resolved]
+
+
+def _process_pdf(
+    pdf_path: Path,
+    args: argparse.Namespace,
+    *,
+    model: object,
+    client: object,
+    pipeline: ConversionPipeline,
+    output_dir: Path | None,
+    pages_per_chunk: int,
+    rules_cache: dict[Path, str],
+) -> DocumentUsageStats:
+    """Convert or remerge a single PDF and return its usage stats.
+
+    Raises on failure so the caller can count success/failure.
+    """
+    suffix = f"_first{args.max_pages}" if args.max_pages else ""
+    output_file = resolve_output(pdf_path, suffix, output_dir)
+
+    if args.remerge:
+        result = pipeline.remerge(output_file, pdf_path=pdf_path)
+    else:
+        assert client is not None
+        system_prompt = _resolve_rules(pdf_path, args.rules, rules_cache)
+
+        converter = PdfConverter(
+            client, model,
+            use_cache=args.cache,
+            system_prompt=system_prompt,
+        )
+        result = pipeline.convert(
+            converter, pdf_path, output_file,
+            pages_per_chunk=pages_per_chunk,
+            max_pages=args.max_pages,
+            force=args.force,
+        )
+
+    return result.stats
+
+
+def _log_summary(
+    model: object,
+    all_stats: list[DocumentUsageStats],
+    total_elapsed: float,
+    success: int,
+    failure: int,
+    cached: int,
+    remerge: bool,
+) -> None:
+    """Print the final conversion summary block."""
+    _log.info("")
+    _log.info(_SUMMARY_SEP)
+    if all_stats and not remerge:
+        _log.info("")
+        summary = format_summary(model, all_stats)
+        for line in summary.split("\n"):
+            _log.info(line)
+        _log.info("")
+    _log.info(_SUMMARY_SEP)
+    _log.info("Total time: %.1fs", total_elapsed)
+    if remerge:
+        _log.info("Results: %d remerged, %d failed", success, failure)
+    else:
+        _log.info("Results: %d converted, %d failed, %d cached", success, failure, cached)
+    _log.info(_SUMMARY_SEP)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    """Main entry point."""
+    parser = _build_parser()
 
     # Show help if no arguments provided
     if len(sys.argv) == 1:
@@ -301,6 +430,7 @@ Examples:
     remerge = args.remerge
 
     try:
+        _log.info("pdf2md-claude %s", __version__)
         _log.info("Found %d PDF(s) to process", len(pdf_paths))
         if remerge:
             _log.info("Mode: --remerge (re-merge from cached chunks, no API calls)")
@@ -327,6 +457,17 @@ Examples:
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Build the processing step chain from CLI args.
+        steps: list[ProcessingStep] = [MergeContinuedTablesStep()]
+        if not args.no_images:
+            steps.append(ExtractImagesStep(
+                image_mode=ImageMode(args.image_mode),
+                render_dpi=args.image_dpi,
+            ))
+        steps.append(ValidateStep())
+
+        pipeline = ConversionPipeline(steps)
+
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []
         success = 0
@@ -350,76 +491,23 @@ Examples:
             _log.info("%s:", doc_name)
 
             try:
-                output_file = resolve_output(pdf_path, suffix, output_dir)
-
-                # Resolve custom rules for this PDF.
-                system_prompt = None
-                if not remerge:
-                    rules_path = args.rules
-                    if not rules_path:
-                        auto_path = pdf_path.parent / AUTO_RULES_FILENAME
-                        if auto_path.is_file():
-                            rules_path = auto_path
-                    if rules_path:
-                        resolved_rules = rules_path.resolve()
-                        if resolved_rules not in rules_cache:
-                            parsed = parse_rules_file(resolved_rules)
-                            rules_cache[resolved_rules] = build_custom_system_prompt(parsed)
-                            _log.info(
-                                "Custom rules (%s): %d replaced, %d appended, "
-                                "%d inserted, %d added",
-                                rules_path, len(parsed.replacements),
-                                len(parsed.appends), len(parsed.insertions),
-                                len(parsed.extras),
-                            )
-                        system_prompt = rules_cache[resolved_rules]
-
-                image_mode = ImageMode(args.image_mode)
-
-                if remerge:
-                    result = remerge_document(
-                        output_file, pdf_path=pdf_path,
-                        extract_images=not args.no_images,
-                        image_mode=image_mode,
-                        image_dpi=args.image_dpi,
-                    )
-                else:
-                    assert client is not None
-                    result = convert_document(
-                        client, model, pdf_path, output_file,
-                        max_pages=args.max_pages,
-                        use_cache=args.cache,
-                        pages_per_chunk=pages_per_chunk,
-                        force=args.force,
-                        extract_images=not args.no_images,
-                        image_mode=image_mode,
-                        image_dpi=args.image_dpi,
-                        system_prompt=system_prompt,
-                    )
-                all_stats.append(result.stats)
+                stats = _process_pdf(
+                    pdf_path, args,
+                    model=model,
+                    client=client,
+                    pipeline=pipeline,
+                    output_dir=output_dir,
+                    pages_per_chunk=pages_per_chunk,
+                    rules_cache=rules_cache,
+                )
+                all_stats.append(stats)
                 success += 1
             except Exception as e:
                 _log.error("  ✗ %s: %s: %s", doc_name, type(e).__name__, e)
                 failure += 1
 
         total_elapsed = time.time() - total_start
-
-        # Summary
-        _log.info("")
-        _log.info(_SUMMARY_SEP)
-        if all_stats and not remerge:
-            _log.info("")
-            summary = format_summary(model, all_stats)
-            for line in summary.split("\n"):
-                _log.info(line)
-            _log.info("")
-        _log.info(_SUMMARY_SEP)
-        _log.info("Total time: %.1fs", total_elapsed)
-        if remerge:
-            _log.info("Results: %d remerged, %d failed", success, failure)
-        else:
-            _log.info("Results: %d converted, %d failed, %d cached", success, failure, cached)
-        _log.info(_SUMMARY_SEP)
+        _log_summary(model, all_stats, total_elapsed, success, failure, cached, remerge)
 
         return 1 if failure > 0 else 0
 

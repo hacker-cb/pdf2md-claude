@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from pdf2md_claude.markers import IMAGE_RECT
 from pdf2md_claude.prompt import SYSTEM_PROMPT, _DEFAULT_REGISTRY, _PREAMBLE_BODY
 from pdf2md_claude.rules import (
     AUTO_RULES_FILENAME,
@@ -177,7 +178,7 @@ class TestBuildCustomPrompt:
         prompt = build_custom_system_prompt(parsed)
         # Both original and appended text should appear.
         assert "Also handle SVGs." in prompt
-        assert "IMAGE_RECT" in prompt  # from original images rule
+        assert IMAGE_RECT.tag in prompt  # from original images rule
 
     def test_add_after_inserts(self) -> None:
         parsed = RulesFileResult(insertions=[("headings", "Inserted after headings.")])

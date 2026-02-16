@@ -197,7 +197,7 @@ def calculate_cost(
 def fmt_duration(seconds: float) -> str:
     """Format a duration in seconds to a human-readable string.
 
-    Examples: ``"45s"``, ``"2m 15s"``, ``"1h 3m 12s"``.
+    Examples: ``"45s"``, ``"2m 15s"``, ``"1h 03m 12s"``.
     """
     if seconds < 0:
         return "0s"

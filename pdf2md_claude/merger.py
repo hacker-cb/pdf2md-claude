@@ -19,7 +19,7 @@ from pdf2md_claude.markers import (
     PAGE_BEGIN,
     PAGE_END,
     TABLE_BLOCK_RE,
-    TABLE_CONTINUE_RE,
+    TABLE_CONTINUE,
 )
 
 _log = logging.getLogger("merger")
@@ -39,18 +39,14 @@ _TBODY_ROWS_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _TR_RE = re.compile(r"<tr\b[^>]*>.*?</tr>", re.DOTALL | re.IGNORECASE)
-# "(continued)" title line that precedes a continuation table.
-_CONTINUED_TITLE_RE = re.compile(
-    r"\*\*Table\s+(?:\d+|[A-Z]\.\d+)\s*[–—-][^*]*\*\*\s*\*\(continued\)\*",
-)
 
 
 def _extract_pages(markdown: str) -> dict[int, str]:
     """Extract a mapping of page_number -> full page block (BEGIN to END).
 
     Each value includes the PAGE_BEGIN and PAGE_END markers.
-    Content outside any page markers is attached to the nearest preceding
-    page or dropped if before the first marker.
+    Content outside any page markers (between pages or before the first
+    marker) is dropped.
     """
     pages: dict[int, str] = {}
     for match in _PAGE_BLOCK_RE.finditer(markdown):
@@ -138,7 +134,7 @@ def merge_continued_tables(markdown: str) -> str:
     """
     # Find all TABLE_CONTINUE markers.  Process from last to first so
     # that string indices remain valid after each splice.
-    markers = list(TABLE_CONTINUE_RE.finditer(markdown))
+    markers = list(TABLE_CONTINUE.re.finditer(markdown))
     if not markers:
         return markdown
 
@@ -247,8 +243,8 @@ def merge_continued_tables(markdown: str) -> str:
         markdown = new_markdown
 
         # Build a compact description of which page boundary was stitched.
-        end_pages = PAGE_END.re.findall(page_markers)
-        begin_pages = PAGE_BEGIN.re.findall(page_markers)
+        end_pages = PAGE_END.re_value.findall(page_markers)
+        begin_pages = PAGE_BEGIN.re_value.findall(page_markers)
         if end_pages and begin_pages:
             boundary = f"p{end_pages[-1]} → p{begin_pages[0]}"
             _log.info(
@@ -261,7 +257,7 @@ def merge_continued_tables(markdown: str) -> str:
             )
 
     # Final sanity: no TABLE_CONTINUE markers should remain.
-    remaining = len(TABLE_CONTINUE_RE.findall(markdown))
+    remaining = len(TABLE_CONTINUE.re.findall(markdown))
     if remaining:
         _log.warning(
             "    %d TABLE_CONTINUE marker(s) still present after merging",
@@ -274,13 +270,13 @@ def merge_continued_tables(markdown: str) -> str:
 def _extract_page_markers(text: str) -> str:
     """Extract PDF_PAGE_BEGIN/END markers from a text region.
 
-    Returns all page markers found in *text* as a newline-joined string,
+    Returns all page markers found in *text* as a double-newline-joined string,
     preserving their order.  Non-marker content (TABLE_CONTINUE marker,
     "(continued)" titles, whitespace) is discarded.
     """
     markers: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if PAGE_BEGIN.re.match(stripped) or PAGE_END.re.match(stripped):
+        if PAGE_BEGIN.re_value.match(stripped) or PAGE_END.re_value.match(stripped):
             markers.append(stripped)
     return "\n\n".join(markers)

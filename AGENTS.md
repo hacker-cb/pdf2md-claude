@@ -27,20 +27,20 @@ All source modules live in `pdf2md_claude/`, tests in `tests/`.
 
 Start from `cli.py` to understand the entry point, then `pipeline.py` for single-document orchestration:
 
-- `pdf2md_claude/cli.py` -- Entry point. Parses args, iterates PDFs, delegates each to `pipeline.convert_document()`, prints summary.
-- `pdf2md_claude/pipeline.py` -- Single-document orchestration: creates work directory, calls converter, merges chunks, validates, writes output.
+- `pdf2md_claude/cli.py` -- Entry point. Parses args, builds the processing step chain from CLI flags, creates `PdfConverter` and `ConversionPipeline`, iterates PDFs, delegates each to `pipeline.convert()` / `pipeline.remerge()`, prints summary.
+- `pdf2md_claude/pipeline.py` -- Single-document orchestration via `ConversionPipeline` class. Uses a step-based architecture: after chunk merging, a configurable list of `ProcessingStep` objects is executed in order via `_run_steps()`. Built-in steps: `MergeContinuedTablesStep`, `ExtractImagesStep`, `ValidateStep`. Both `convert()` and `remerge()` share the `_process()` method (merge + steps + write). Key types: `ProcessingContext`, `ProcessingStep` (protocol), `ConversionPipeline`, `PipelineResult`.
 - `pdf2md_claude/workdir.py` -- Chunk persistence and resume. Manages a `.chunks/` directory with manifest-based staleness detection. All cross-chunk data flows through disk (never in memory). Key types: `Manifest`, `ChunkUsageStats`, `WorkDir`.
-- `pdf2md_claude/converter.py` -- Chunked PDF conversion with page-aligned context passing. Each chunk is saved to disk immediately via `WorkDir`. On resume, cached chunks are skipped. `_remap_page_markers()` remaps both BEGIN and END markers. Key types: `ChunkResult`, `ConversionResult`.
+- `pdf2md_claude/converter.py` -- Chunked PDF conversion via `PdfConverter` class. Holds API context (client, model, caching, system prompt); `convert()` splits PDF into chunks with context passing. Each chunk is saved to disk immediately via `WorkDir`. On resume, cached chunks are skipped. `_remap_page_markers()` remaps both BEGIN and END markers. Key types: `PdfConverter`, `ChunkResult`, `ConversionResult`.
 - `pdf2md_claude/merger.py` -- Deterministic page-marker concatenation (no LLM). Joins disjoint chunks by page number. Also merges continuation tables flagged with `TABLE_CONTINUE` markers into a single `<table>`, preserving page markers inside `<tbody>`.
-- `pdf2md_claude/images.py` -- Image extraction and injection. Parses `IMAGE_RECT` bounding-box markers, renders regions from the PDF via pymupdf (two-pass structural matching with raster snap), saves PNG files, and injects `![caption](path)` references. Key types: `ImageRect`, `RenderedImage`.
-- `pdf2md_claude/validator.py` -- Post-conversion checks (page markers, page-end matching, image block pairing, tables, heading sequence gaps, binary sequence monotonicity, fabrication detection).
-- `pdf2md_claude/markers.py` -- Single source of truth for all HTML comment markers (`PAGE_BEGIN`, `PAGE_END`, `TABLE_CONTINUE`, `IMAGE_BEGIN`, `IMAGE_END`, `IMAGE_RECT`, `IMAGE_AI_GENERATED_DESCRIPTION_*`). All regex patterns and format strings live here.
+- `pdf2md_claude/images.py` -- Image extraction and injection via `ImageExtractor` class. Holds PDF path, output dir, image mode, DPI; `extract_and_inject()` parses `IMAGE_RECT` markers, renders regions from the PDF via pymupdf (two-pass structural matching with raster snap), saves PNG files, and injects `![caption](path)` references. Key types: `ImageExtractor`, `ImageRect`, `RenderedImage`.
+- `pdf2md_claude/validator.py` -- Post-conversion checks (page markers, page-end matching, image block pairing, tables, figures, heading sequence gaps, duplicate headings, binary sequence monotonicity, fabrication detection).
+- `pdf2md_claude/markers.py` -- Single source of truth for all HTML comment markers (`PAGE_BEGIN`, `PAGE_END`, `TABLE_CONTINUE`, `PAGE_SKIP`, `IMAGE_BEGIN`, `IMAGE_END`, `IMAGE_RECT`, `IMAGE_AI_DESC_BEGIN`, `IMAGE_AI_DESC_END`). Every marker is a `MarkerDef` instance; all regex patterns and format strings live here.
 - `pdf2md_claude/prompt.py` -- Claude prompts. References marker definitions from `markers.py` via f-strings. Uses `{{placeholder}}` for runtime `.format()` values.
 - `pdf2md_claude/rules.py` -- Custom rules file support. Parses user rules files (`@replace`, `@append`, `@add`, `@add after`), builds custom system prompts, and generates rules templates. Key types: `RulesFileResult`.
 - `pdf2md_claude/models.py` -- Model configs, pricing, `DocumentUsageStats`, cost calculation.
 - `pdf2md_claude/client.py` -- Anthropic API client setup.
 
-Tests: `tests/test_converter.py`, `tests/test_images.py`, `tests/test_markers.py`, `tests/test_rules.py`, `tests/test_table_merger.py`, `tests/test_validator.py`, `tests/test_workdir.py`.
+Tests: `tests/test_converter.py`, `tests/test_images.py`, `tests/test_markers.py`, `tests/test_pipeline.py`, `tests/test_rules.py`, `tests/test_table_merger.py`, `tests/test_validator.py`, `tests/test_workdir.py`.
 
 ## Code Conventions
 

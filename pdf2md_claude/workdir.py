@@ -181,8 +181,14 @@ class WorkDir:
 
     @staticmethod
     def _read_manifest(path: Path) -> Manifest:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return Manifest(**data)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return Manifest(**data)
+        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+            raise RuntimeError(
+                f"Corrupt manifest in {path}. "
+                f"Re-run with -f (--force) to rebuild: {exc}"
+            ) from exc
 
     @staticmethod
     def _write_manifest(path: Path, manifest: Manifest) -> None:
@@ -253,11 +259,19 @@ class WorkDir:
 
         Returns:
             ``ChunkUsageStats`` instance.
+
+        Raises:
+            RuntimeError: If the meta file is corrupt or has unexpected keys.
         """
-        data = json.loads(
-            self._chunk_meta(index).read_text(encoding="utf-8")
-        )
-        return ChunkUsageStats(**data)
+        path = self._chunk_meta(index)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return ChunkUsageStats(**data)
+        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+            raise RuntimeError(
+                f"Corrupt chunk metadata in {path}. "
+                f"Re-run with -f (--force) to rebuild: {exc}"
+            ) from exc
 
     def has_chunk(self, index: int) -> bool:
         """Check whether a chunk has been fully written.
@@ -289,13 +303,17 @@ class WorkDir:
 
         Returns:
             ``DocumentUsageStats`` instance, or ``None`` if the file
-            does not exist.
+            does not exist or is corrupt (returns ``None`` on error).
         """
         path = self._path / self._STATS_FILE
         if not path.exists():
             return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return DocumentUsageStats(**data)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return DocumentUsageStats(**data)
+        except (json.JSONDecodeError, TypeError, KeyError):
+            _log.warning("Corrupt stats file %s — ignoring", path)
+            return None
 
     # -- Housekeeping -------------------------------------------------------
 
@@ -315,8 +333,10 @@ class WorkDir:
     def chunk_count(self) -> int:
         """Return the expected number of chunks from the manifest.
 
+        Lazy-loads the manifest from disk if it has not been loaded yet.
+
         Raises:
-            RuntimeError: If the manifest has not been loaded yet.
+            RuntimeError: If the manifest file does not exist on disk.
         """
         if self._manifest is None:
             manifest_file = self._path / self._MANIFEST_FILE

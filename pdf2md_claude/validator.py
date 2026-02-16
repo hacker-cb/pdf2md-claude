@@ -20,11 +20,11 @@ from pathlib import Path
 
 from pdf2md_claude.markers import (
     IMAGE_AI_DESCRIPTION_BLOCK_RE,
-    IMAGE_BEGIN_RE,
-    IMAGE_END_RE,
+    IMAGE_BEGIN,
+    IMAGE_END,
     PAGE_BEGIN,
     PAGE_END,
-    PAGE_SKIP_RE,
+    PAGE_SKIP,
     TABLE_BLOCK_RE,
 )
 
@@ -67,8 +67,8 @@ _FIGURE_REF_RE = re.compile(r"\bFigure\s+(\d+|[A-Z]\.\d+)\b")
 _FIGURE_DEF_RE = re.compile(r"\*\*Figure\s+(\d+|[A-Z]\.\d+)\s*[–—-]")
 
 # Page markers: <!-- PDF_PAGE_BEGIN 42 --> / <!-- PDF_PAGE_END 42 -->
-_PAGE_MARKER_RE = PAGE_BEGIN.re
-_PAGE_END_MARKER_RE = PAGE_END.re
+_PAGE_MARKER_RE = PAGE_BEGIN.re_value
+_PAGE_END_MARKER_RE = PAGE_END.re_value
 
 # Known fabrication patterns — Claude's telltale signs of inventing content
 # instead of converting it from the PDF.
@@ -189,6 +189,10 @@ def _check_fabrication(markdown: str, result: ValidationResult) -> None:
 # Pages with fewer words (e.g., image-only, formula-only) are skipped.
 _FIDELITY_MIN_WORDS = 20
 
+# Minimum significant words in the PDF raw text for a page to be checked.
+# Pages with fewer words (scanned image, blank page) are skipped.
+_FIDELITY_MIN_PDF_WORDS = 5
+
 # Overlap threshold: fraction of markdown's significant words that must
 # appear in the PDF page's raw text.  Below this → suspect fabrication.
 _FIDELITY_OVERLAP_THRESHOLD = 0.50
@@ -280,13 +284,18 @@ def check_page_fidelity(
 
         page_contents = _extract_page_contents(markdown)
         if not page_contents:
+            if PAGE_BEGIN.re.search(markdown):
+                result.errors.append(
+                    "Fidelity check skipped: PAGE_BEGIN markers present "
+                    "but no PAGE_END markers (needed for content extraction)"
+                )
             return
 
         suspect: list[tuple[int, float]] = []
 
         for page_num, md_content in sorted(page_contents.items()):
             # Skip pages with PAGE_SKIP marker.
-            if PAGE_SKIP_RE.search(md_content):
+            if PAGE_SKIP.re.search(md_content):
                 continue
 
             # Extract significant words from markdown.
@@ -307,7 +316,7 @@ def check_page_fidelity(
 
             # Skip if PDF text extraction yielded very few words
             # (scanned image page, blank page, etc.).
-            if len(pdf_words) < 5:
+            if len(pdf_words) < _FIDELITY_MIN_PDF_WORDS:
                 continue
 
             # Overlap: fraction of markdown words found in PDF text.
@@ -339,7 +348,7 @@ def check_page_fidelity(
 
 def _count_skipped_pages(markdown: str) -> int:
     """Count pages containing a PDF_PAGE_SKIP marker."""
-    return len(PAGE_SKIP_RE.findall(markdown))
+    return len(PAGE_SKIP.re.findall(markdown))
 
 
 def _check_page_markers(markdown: str, result: ValidationResult) -> None:
@@ -384,10 +393,8 @@ def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
     end_pages = [int(m) for m in _PAGE_END_MARKER_RE.findall(markdown)]
 
     if not end_pages:
-        # End markers are optional for now (backward compatibility).
-        # Only warn if begin markers exist but no end markers.
         if begin_pages:
-            result.warnings.append(
+            result.errors.append(
                 "No PDF_PAGE_END markers found (PDF_PAGE_BEGIN markers present)"
             )
         return
@@ -411,7 +418,7 @@ def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
     missing_ends = begin_set - end_set
     if missing_ends:
         for p in sorted(missing_ends):
-            result.warnings.append(
+            result.errors.append(
                 f"PDF_PAGE_BEGIN {p} has no matching PDF_PAGE_END"
             )
 
@@ -435,7 +442,7 @@ def _check_image_block_pairing(markdown: str, result: ValidationResult) -> None:
         if page_match:
             current_page = int(page_match.group(1))
 
-        if IMAGE_BEGIN_RE.search(line):
+        if IMAGE_BEGIN.re.search(line):
             begin_count += 1
             if in_block:
                 loc = f" (page {open_page})" if open_page else ""
@@ -446,7 +453,7 @@ def _check_image_block_pairing(markdown: str, result: ValidationResult) -> None:
             in_block = True
             open_page = current_page
 
-        if IMAGE_END_RE.search(line):
+        if IMAGE_END.re.search(line):
             end_count += 1
             if not in_block:
                 result.errors.append(
@@ -477,7 +484,7 @@ _SECTION_HEADING_RE = re.compile(
 
 
 def _check_heading_sequence(markdown: str, result: ValidationResult) -> None:
-    """Warn if numbered section headings have large gaps."""
+    """Warn if numbered section headings have gaps (missing sections)."""
     headings = _SECTION_HEADING_RE.findall(markdown)
 
     if len(headings) < 2:
@@ -556,11 +563,10 @@ def _check_duplicate_headings(markdown: str, result: ValidationResult) -> None:
 
 
 # Regex to extract binary values from HTML table cells.
-# Matches patterns like "0000b", "1010b", "0100 1111b" inside <td> content.
+# Matches patterns like "0000b", "1010b", "01001111b" inside <td> content.
 _BINARY_IN_TD_RE = re.compile(
     r"<td[^>]*>\s*([01]{4,8})b\s*</td>",
 )
-
 
 
 def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:

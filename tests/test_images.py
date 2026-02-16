@@ -22,23 +22,21 @@ from pdf2md_claude.markers import (
     IMAGE_FILENAME_EXAMPLE,
     IMAGE_FILENAME_FORMAT,
     IMAGE_FILENAME_RE,
-    IMAGE_RECT_EXAMPLE,
-    IMAGE_RECT_MARKER_FORMAT,
-    IMAGE_RECT_RE,
+    IMAGE_RECT,
     IMAGE_REF_RE,
 )
 
 
 # ---------------------------------------------------------------------------
-# IMAGE_RECT_RE — regex tests
+# IMAGE_RECT.re_value — regex tests
 # ---------------------------------------------------------------------------
 
 
 class TestImageRectRegex:
-    """Tests for IMAGE_RECT_RE matching."""
+    """Tests for IMAGE_RECT.re_value matching."""
 
     def test_matches_example(self):
-        m = IMAGE_RECT_RE.search(IMAGE_RECT_EXAMPLE)
+        m = IMAGE_RECT.re_value.search(IMAGE_RECT.example)
         assert m is not None
         assert m.group(1) == "0.02"
         assert m.group(2) == "0.15"
@@ -47,31 +45,31 @@ class TestImageRectRegex:
 
     def test_matches_full_page(self):
         marker = "<!-- IMAGE_RECT 0.0,0.0,1.0,1.0 -->"
-        m = IMAGE_RECT_RE.search(marker)
+        m = IMAGE_RECT.re_value.search(marker)
         assert m is not None
         assert float(m.group(1)) == 0.0
         assert float(m.group(4)) == 1.0
 
     def test_matches_with_extra_whitespace(self):
         marker = "<!--  IMAGE_RECT  0.1,0.2,0.8,0.9  -->"
-        m = IMAGE_RECT_RE.search(marker)
+        m = IMAGE_RECT.re_value.search(marker)
         assert m is not None
         assert m.group(1) == "0.1"
 
     def test_no_match_on_missing_coords(self):
         marker = "<!-- IMAGE_RECT -->"
-        m = IMAGE_RECT_RE.search(marker)
+        m = IMAGE_RECT.re_value.search(marker)
         assert m is None
 
     def test_no_match_on_wrong_tag(self):
         marker = "<!-- IMAGE_BEGIN 0.0,0.0,1.0,1.0 -->"
-        m = IMAGE_RECT_RE.search(marker)
+        m = IMAGE_RECT.re_value.search(marker)
         assert m is None
 
     def test_captures_integer_coords(self):
         """Coordinates like 0 and 1 (no decimal) should still match."""
         marker = "<!-- IMAGE_RECT 0,0,1,1 -->"
-        m = IMAGE_RECT_RE.search(marker)
+        m = IMAGE_RECT.re_value.search(marker)
         assert m is not None
         assert float(m.group(1)) == 0.0
         assert float(m.group(4)) == 1.0
@@ -79,30 +77,30 @@ class TestImageRectRegex:
     def test_no_match_on_old_format_with_page(self):
         """Old format with page number should NOT match the new regex."""
         marker = "<!-- IMAGE_RECT 5 0.02,0.15,0.98,0.65 -->"
-        m = IMAGE_RECT_RE.search(marker)
+        m = IMAGE_RECT.re_value.search(marker)
         assert m is None
 
 
 # ---------------------------------------------------------------------------
-# IMAGE_RECT_MARKER_FORMAT
+# IMAGE_RECT
 # ---------------------------------------------------------------------------
 
 
 class TestImageRectFormat:
-    """Tests for IMAGE_RECT_MARKER_FORMAT generation."""
+    """Tests for IMAGE_RECT generation."""
 
     def test_format_basic(self):
-        result = IMAGE_RECT_MARKER_FORMAT.format(
+        result = IMAGE_RECT.format(
             x0=0.02, y0=0.15, x1=0.98, y1=0.65,
         )
-        assert "IMAGE_RECT" in result
+        assert IMAGE_RECT.tag in result
         assert "0.02" in result
 
     def test_format_roundtrips_through_regex(self):
-        result = IMAGE_RECT_MARKER_FORMAT.format(
+        result = IMAGE_RECT.format(
             x0=0.1, y0=0.2, x1=0.9, y1=0.8,
         )
-        m = IMAGE_RECT_RE.search(result)
+        m = IMAGE_RECT.re_value.search(result)
         assert m is not None
         assert float(m.group(1)) == pytest.approx(0.1)
         assert float(m.group(2)) == pytest.approx(0.2)
@@ -111,7 +109,7 @@ class TestImageRectFormat:
 
     def test_format_has_no_page_number(self):
         """Verify the format does not accept a 'page' parameter."""
-        result = IMAGE_RECT_MARKER_FORMAT.format(
+        result = IMAGE_RECT.format(
             x0=0.0, y0=0.0, x1=1.0, y1=1.0,
         )
         # Should not contain any bare integers between tag and coords.

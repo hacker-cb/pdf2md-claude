@@ -172,12 +172,12 @@ class TestCheckPageMarkers:
 class TestCheckPageEndMarkers:
     """Tests for _check_page_end_markers() in validator.py."""
 
-    def test_no_end_markers_warns(self):
-        """Missing end markers when begin markers exist should warn."""
+    def test_no_end_markers_is_error(self):
+        """Missing end markers when begin markers exist should error."""
         r = ValidationResult()
         md = "<!-- PDF_PAGE_BEGIN 1 -->\nContent"
         _check_page_end_markers(md, r)
-        assert any("No PDF_PAGE_END" in w for w in r.warnings)
+        assert any("No PDF_PAGE_END" in e for e in r.errors)
 
     def test_matching_pairs_no_errors(self):
         """Matched begin/end pairs should produce no errors."""
@@ -199,15 +199,15 @@ class TestCheckPageEndMarkers:
         _check_page_end_markers(md, r)
         assert any("PDF_PAGE_END 99 has no matching" in e for e in r.errors)
 
-    def test_missing_end_warns(self):
-        """Begin marker without matching end should warn."""
+    def test_missing_end_is_error(self):
+        """Begin marker without matching end should error."""
         r = ValidationResult()
         md = (
             "<!-- PDF_PAGE_BEGIN 1 -->\nContent\n<!-- PDF_PAGE_END 1 -->\n"
             "<!-- PDF_PAGE_BEGIN 2 -->\nMore"
         )
         _check_page_end_markers(md, r)
-        assert any("PDF_PAGE_BEGIN 2 has no matching" in w for w in r.warnings)
+        assert any("PDF_PAGE_BEGIN 2 has no matching" in e for e in r.errors)
 
     def test_no_markers_at_all_no_warn(self):
         """No markers at all should produce no warnings."""
@@ -399,10 +399,7 @@ class TestPromptFormatting:
 # ---------------------------------------------------------------------------
 
 
-def _make_page(n: int, content: str = "") -> str:
-    """Helper: build a page block with BEGIN/END markers."""
-    body = f"\n{content}\n" if content else "\n"
-    return f"{PAGE_BEGIN.format(n)}{body}{PAGE_END.format(n)}"
+from tests.conftest import make_page as _make_page
 
 
 class TestGetContextTail:
@@ -422,7 +419,7 @@ class TestGetContextTail:
         md = "\n".join([_make_page(i, f"Line {i}") for i in range(1, 6)])
         result = _get_context_tail(md, min_pages=1, min_lines=20)
         # Should have extended beyond 1 page to meet min_lines.
-        page_count = len(PAGE_BEGIN.re.findall(result))
+        page_count = len(PAGE_BEGIN.re_value.findall(result))
         assert page_count > 1
 
     def test_always_complete_pages(self):

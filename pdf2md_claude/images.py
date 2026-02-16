@@ -24,10 +24,11 @@ from pathlib import Path
 import pymupdf
 
 from pdf2md_claude.markers import (
-    IMAGE_BEGIN_RE,
-    IMAGE_END_RE,
+    IMAGE_BEGIN,
+    IMAGE_END,
     IMAGE_FILENAME_FORMAT,
-    IMAGE_RECT_RE,
+    IMAGE_FILENAME_RE,
+    IMAGE_RECT,
     IMAGE_REF_RE,
     PAGE_BEGIN,
 )
@@ -161,17 +162,17 @@ def parse_image_rects(markdown: str) -> list[ImageRect]:
 
     for line in lines:
         # Track current page from PAGE_BEGIN markers.
-        page_match = PAGE_BEGIN.re.search(line)
+        page_match = PAGE_BEGIN.re_value.search(line)
         if page_match:
             current_page = int(page_match.group(1))
 
-        if IMAGE_BEGIN_RE.search(line):
+        if IMAGE_BEGIN.re.search(line):
             in_block = True
             block_rect_match = None
             block_caption = ""
             continue
 
-        if in_block and IMAGE_END_RE.search(line):
+        if in_block and IMAGE_END.re.search(line):
             # Flush block: if we found an IMAGE_RECT, emit it.
             if block_rect_match is not None and current_page is not None:
                 m = block_rect_match
@@ -192,7 +193,7 @@ def parse_image_rects(markdown: str) -> list[ImageRect]:
 
         if in_block:
             # Look for IMAGE_RECT marker.
-            rm = IMAGE_RECT_RE.search(line)
+            rm = IMAGE_RECT.re_value.search(line)
             if rm:
                 block_rect_match = rm
             # Look for bold caption line.
@@ -335,13 +336,17 @@ def _compute_render_dpi(override: int | None = None) -> int:
     return override if override is not None else _RENDER_DPI
 
 
+_RGB_CHANNELS = 3
+"""Number of colour channels in an sRGB pixmap (excluding alpha)."""
+
+
 def _pixmap_to_png(pix: pymupdf.Pixmap) -> bytes:
     """Convert a pymupdf Pixmap to PNG bytes, handling CMYK→RGB.
 
     If the pixmap has more than 3 color channels (excluding alpha),
     it is converted to sRGB before encoding.
     """
-    if pix.n - pix.alpha > 3:
+    if pix.n - pix.alpha > _RGB_CHANNELS:
         pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
     return pix.tobytes("png")
 
@@ -373,10 +378,13 @@ def _extract_native(
     returned at its original resolution regardless of DPI — native bytes
     are already compressed and optimal.
 
+    When the image has a soft mask, compositing is attempted and the
+    result is returned as PNG.
+
     Falls back to ``None`` (caller should render the raster rect) when:
 
     - ``doc.extract_image()`` fails
-    - The image has a soft mask (transparency) requiring compositing
+    - Soft-mask compositing fails (transparency mask cannot be applied)
 
     Returns:
         ``(image_bytes, extension)`` on success, or ``None``.
@@ -490,6 +498,83 @@ def _render_debug_variants(
     return variants
 
 
+def _render_single_block(
+    doc: pymupdf.Document,
+    page: pymupdf.Page,
+    clip: pymupdf.Rect,
+    matched_list: list[PageRaster],
+    page_rasters: list[PageRaster],
+    image_mode: ImageMode,
+    dpi: int,
+) -> tuple[bytes, str]:
+    """Render or extract a single IMAGE block based on mode and raster matches.
+
+    Encapsulates the per-block rendering decision tree: BBOX renders the
+    AI bounding box directly; AUTO tries native extraction then falls back
+    to rendering; SNAP always renders snapped to raster bounds.
+
+    Args:
+        doc: Open pymupdf Document (needed for native extraction).
+        page: The PDF page being rendered.
+        clip: Claude's padded bounding-box rect (absolute points).
+        matched_list: Rasters overlapping the clip.
+        page_rasters: All significant rasters on the page (for logging).
+        image_mode: ``BBOX``, ``AUTO``, or ``SNAP``.
+        dpi: DPI for page-region renders.
+
+    Returns:
+        ``(image_bytes, extension)`` tuple.
+    """
+    # BBOX mode: render raw AI bounding box, skip matching.
+    if image_mode is ImageMode.BBOX:
+        img_bytes, ext = _render_region(page, clip, dpi)
+        _log.debug("      bbox → render at %d DPI", dpi)
+        return img_bytes, ext
+
+    if len(matched_list) == 1:
+        if image_mode is ImageMode.AUTO:
+            result = _extract_native(doc, matched_list[0])
+            if result is not None:
+                _log.debug(
+                    "      native extract: xref=%d, format=%s, "
+                    "%dx%d px",
+                    matched_list[0].xref, result[1],
+                    matched_list[0].width, matched_list[0].height,
+                )
+                return result
+            snap = matched_list[0].rect
+            img_bytes, ext = _render_region(page, snap, dpi)
+            _log.debug(
+                "      native fallback → render raster rect at %d DPI", dpi,
+            )
+            return img_bytes, ext
+
+        # SNAP mode.
+        snap = matched_list[0].rect
+        img_bytes, ext = _render_region(page, snap, dpi)
+        _log.debug("      snap raster rect at %d DPI", dpi)
+        return img_bytes, ext
+
+    if len(matched_list) > 1:
+        union = pymupdf.Rect(matched_list[0].rect)
+        for r in matched_list[1:]:
+            union |= r.rect
+        if union.is_empty or union.is_infinite:
+            union = clip
+        img_bytes, ext = _render_region(page, union, dpi)
+        _log.debug(
+            "      composite (%d rasters) → render union at %d DPI",
+            len(matched_list), dpi,
+        )
+        return img_bytes, ext
+
+    # No rasters matched (or none on page) — render the AI bbox.
+    img_bytes, ext = _render_region(page, clip, dpi)
+    reason = "no rasters on page" if not page_rasters else "unmatched"
+    _log.debug("      %s → render bbox at %d DPI", reason, dpi)
+    return img_bytes, ext
+
+
 def render_image_rects(
     doc: pymupdf.Document,
     rects: list[ImageRect],
@@ -574,8 +659,8 @@ def render_image_rects(
             dpi = _compute_render_dpi(render_dpi)
             matched_list = matches[i]
             img_idx = page_counters.get(page_num, 0)
-            page_counters[page_num] = img_idx + 1
-            base_idx = img_idx + 1
+            base_idx = img_idx + 1          # 1-based index for filenames
+            page_counters[page_num] = base_idx
 
             # --- DEBUG mode: produce all 3 variants per block --------
             if image_mode is ImageMode.DEBUG:
@@ -598,59 +683,10 @@ def render_image_rects(
                 continue
 
             # --- Normal modes: single image per block ----------------
-            # BBOX mode: render raw AI bounding box, skip matching.
-            if image_mode is ImageMode.BBOX:
-                img_bytes, ext = _render_region(page, clip, dpi)
-                _log.debug(
-                    "      bbox → render at %d DPI", dpi,
-                )
-
-            elif len(matched_list) == 1:
-                if image_mode is ImageMode.AUTO:
-                    result = _extract_native(doc, matched_list[0])
-                    if result is not None:
-                        img_bytes, ext = result
-                        _log.debug(
-                            "      native extract: xref=%d, format=%s, "
-                            "%dx%d px",
-                            matched_list[0].xref, ext,
-                            matched_list[0].width, matched_list[0].height,
-                        )
-                    else:
-                        snap = matched_list[0].rect
-                        img_bytes, ext = _render_region(page, snap, dpi)
-                        _log.debug(
-                            "      native fallback → render raster rect "
-                            "at %d DPI",
-                            dpi,
-                        )
-                else:
-                    # SNAP mode.
-                    snap = matched_list[0].rect
-                    img_bytes, ext = _render_region(page, snap, dpi)
-                    _log.debug(
-                        "      snap raster rect at %d DPI", dpi,
-                    )
-
-            elif len(matched_list) > 1:
-                matched = matched_list
-                union = pymupdf.Rect(matched[0].rect)
-                for r in matched[1:]:
-                    union |= r.rect
-                if union.is_empty or union.is_infinite:
-                    union = clip
-                img_bytes, ext = _render_region(page, union, dpi)
-                _log.debug(
-                    "      composite (%d rasters) → render union at %d DPI",
-                    len(matched), dpi,
-                )
-
-            else:
-                img_bytes, ext = _render_region(page, clip, dpi)
-                reason = "no rasters on page" if not page_rasters else "unmatched"
-                _log.debug(
-                    "      %s → render bbox at %d DPI", reason, dpi,
-                )
+            img_bytes, ext = _render_single_block(
+                doc, page, clip, matched_list, page_rasters,
+                image_mode, dpi,
+            )
 
             filename = IMAGE_FILENAME_FORMAT.format(
                 page=page_num, idx=base_idx, ext=ext,
@@ -693,9 +729,11 @@ def save_images(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Remove stale images from previous runs.
+    # Remove image files from previous runs.  Only deletes files whose
+    # names match IMAGE_FILENAME_RE (e.g. img_p003_01.png) to avoid
+    # accidentally removing unrelated files if output_dir is mispointed.
     for old in output_dir.iterdir():
-        if old.is_file():
+        if old.is_file() and IMAGE_FILENAME_RE.match(old.name):
             old.unlink()
 
     page_filenames: dict[int, list[str]] = {}
@@ -763,17 +801,17 @@ def inject_image_refs(
 
     for line in lines:
         # Track page number.
-        page_match = PAGE_BEGIN.re.search(line)
+        page_match = PAGE_BEGIN.re_value.search(line)
         if page_match:
             current_page = int(page_match.group(1))
 
         # Detect IMAGE_BEGIN — start buffering.
-        if IMAGE_BEGIN_RE.search(line):
+        if IMAGE_BEGIN.re.search(line):
             block_buffer = [line]
             continue
 
         # Detect IMAGE_END — flush the buffered block.
-        if block_buffer is not None and IMAGE_END_RE.search(line):
+        if block_buffer is not None and IMAGE_END.re.search(line):
             block_buffer.append(line)
             result.extend(
                 _process_image_block(
@@ -901,61 +939,76 @@ def _build_debug_table(
 
 
 # ---------------------------------------------------------------------------
-# Convenience: full pipeline step
+# ImageExtractor class
 # ---------------------------------------------------------------------------
 
 
-def extract_and_inject_images(
-    pdf_path: Path,
-    markdown: str,
-    output_dir: Path,
-    image_mode: ImageMode = ImageMode.AUTO,
-    render_dpi: int | None = None,
-) -> str:
-    """Parse IMAGE_RECT markers, extract/render images, save, inject refs.
+class ImageExtractor:
+    """Extract and inject images from a PDF into markdown.
 
-    This is the single entry point called from the pipeline.  Opens the
-    PDF once and passes the document to :func:`render_image_rects` for
-    page-by-page processing.
+    Holds the image extraction configuration (PDF path, output directory,
+    extraction mode, DPI) so callers only need to pass the markdown text.
 
-    Args:
-        pdf_path: Path to the source PDF.
-        markdown: Merged markdown containing ``IMAGE_RECT`` markers.
-        output_dir: Directory for saving rendered image files.
-        image_mode: Extraction strategy (default ``AUTO``).
-        render_dpi: Explicit DPI override for page-region renders.
+    Usage::
 
-    Returns:
-        Updated markdown with ``![caption](path)`` references injected.
+        extractor = ImageExtractor(pdf_path, output_dir, image_mode=ImageMode.AUTO)
+        updated_markdown = extractor.extract_and_inject(markdown)
     """
-    rects = parse_image_rects(markdown)
-    if not rects:
-        _log.info("  No IMAGE_RECT markers found — skipping image extraction")
-        return markdown
 
-    _log.info("  Found %d IMAGE_RECT marker(s), rendering...", len(rects))
+    def __init__(
+        self,
+        pdf_path: Path,
+        output_dir: Path,
+        image_mode: ImageMode = ImageMode.AUTO,
+        render_dpi: int | None = None,
+    ) -> None:
+        self._pdf_path = pdf_path
+        self._output_dir = output_dir
+        self._image_mode = image_mode
+        self._render_dpi = render_dpi
 
-    doc = pymupdf.open(str(pdf_path))
-    try:
-        rendered = render_image_rects(
-            doc, rects, image_mode=image_mode, render_dpi=render_dpi,
+    def extract_and_inject(self, markdown: str) -> str:
+        """Parse IMAGE_RECT markers, extract/render images, save, inject refs.
+
+        Opens the PDF once and passes the document to
+        :func:`render_image_rects` for page-by-page processing.
+
+        Args:
+            markdown: Merged markdown containing ``IMAGE_RECT`` markers.
+
+        Returns:
+            Updated markdown with ``![caption](path)`` references injected.
+        """
+        rects = parse_image_rects(markdown)
+        if not rects:
+            _log.info("  No IMAGE_RECT markers found — skipping image extraction")
+            return markdown
+
+        _log.info("  Found %d IMAGE_RECT marker(s), rendering...", len(rects))
+
+        doc = pymupdf.open(str(self._pdf_path))
+        try:
+            rendered = render_image_rects(
+                doc, rects,
+                image_mode=self._image_mode,
+                render_dpi=self._render_dpi,
+            )
+        finally:
+            doc.close()
+
+        if not rendered:
+            _log.warning("  All IMAGE_RECT markers failed to render")
+            return markdown
+
+        image_map = save_images(rendered, self._output_dir)
+        rel_prefix = self._output_dir.name
+
+        # Build debug info map if needed.
+        info_map: dict[str, str] | None = None
+        if self._image_mode is ImageMode.DEBUG:
+            info_map = {ri.filename: ri.info for ri in rendered if ri.info}
+
+        return inject_image_refs(
+            markdown, image_map, rel_prefix,
+            image_mode=self._image_mode, info_map=info_map,
         )
-    finally:
-        doc.close()
-
-    if not rendered:
-        _log.warning("  All IMAGE_RECT markers failed to render")
-        return markdown
-
-    image_map = save_images(rendered, output_dir)
-    rel_prefix = output_dir.name
-
-    # Build debug info map if needed.
-    info_map: dict[str, str] | None = None
-    if image_mode is ImageMode.DEBUG:
-        info_map = {ri.filename: ri.info for ri in rendered if ri.info}
-
-    return inject_image_refs(
-        markdown, image_map, rel_prefix,
-        image_mode=image_mode, info_map=info_map,
-    )
