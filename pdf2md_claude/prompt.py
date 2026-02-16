@@ -73,10 +73,8 @@ will be specified in the conversion instructions.
 
 # Rule — Skip elements
 _RULE_SKIP = f"""\
-**Skip**: Page headers, page footers, page numbers, watermarks, and \
-copyright/license lines. Do NOT include the Table of Contents \
-(it references printable page numbers which are meaningless in markdown).
-   - **CRITICAL**: When you skip a page's content, you MUST still emit \
+**Skip**: Page headers, page footers, page numbers, and watermarks.
+   - **CRITICAL**: When you skip entire page's content, you MUST still emit \
 the page markers for that page. Place `{PAGE_SKIP.marker}` between the begin/end \
 markers to signal the skip is intentional:
    ```
@@ -91,26 +89,28 @@ markers — every page in the range must have a begin/end pair."""
 
 # Rule — Headings
 _RULE_HEADINGS = """\
-**Headings**: Preserve the document's section numbering and hierarchy. \
-Count the dot-separated numbers to determine Markdown heading depth:
-   - `#` — document title
-   - `##` — top-level sections (e.g. "11 Definition of commands")
-   - `###` — subsections (e.g. "11.2 Overview sheets")
-   - `####` — sub-subsections (e.g. "11.2.1 General")
-   - `#####` — deeper levels (e.g. "9.2.2.2 Standby")"""
+**Headings**:
+   - **General policy**: Preserve the document's section numbering and \
+hierarchy exactly as they appear in the source.
+   - **Depth mapping**: Count the dot-separated numbers to determine \
+Markdown heading depth:
+     - `#` — document title (exactly one per document)
+     - `##` — top-level sections (e.g. "1 Introduction")
+     - `###` — subsections (e.g. "1.2 Scope")
+     - `####` — sub-subsections (e.g. "1.2.1 General")
+     - `#####` — deeper levels (e.g. "1.2.1.1 Details")"""
 
 # Rule — Inline formatting (applies to ALL output)
 _RULE_FORMATTING = """\
-**Inline formatting** (applies everywhere — body text AND tables):
-   - Superscripts: ALWAYS use `<sup>`, not Unicode superscript characters \
-(e.g., write `a<sup>2</sup>` not `a²`). This ensures full character \
-coverage and consistent rendering.
-   - Subscripts: ALWAYS use `<sub>`, not Unicode subscript characters \
-(e.g., write `H<sub>2</sub>O` not `H₂O`).
-   - Dashes: use an en-dash `–` for numeric ranges and list bullets; \
-use a hyphen `-` only in compound words.
-   - Italics in body text: use Markdown `*text*`. Inside HTML tables: \
-use `<em>text</em>`."""
+**Inline formatting**:
+   - **Body text** — use Markdown syntax: `*italic*`, `**bold**`, `` `code` ``.
+   - **Inside HTML tables** — use HTML tags: `<em>`, `<strong>`, `<code>`.
+   - **Superscripts / Subscripts** (everywhere, body AND tables): ALWAYS use \
+`<sup>` / `<sub>` — there is no Markdown equivalent. Do NOT use Unicode \
+superscript/subscript characters (write `a<sup>2</sup>` not `a²`, \
+`H<sub>2</sub>O` not `H₂O`).
+   - **Dashes**: use an en-dash `–` for numeric ranges and list bullets; \
+use a hyphen `-` only in compound words."""
 
 # Rule — Formulas
 _RULE_FORMULAS = """\
@@ -221,7 +221,7 @@ content on the page.
 _DEFAULT_REGISTRY: tuple[tuple[str, str], ...] = (
     ("fidelity",     _RULE_FIDELITY),       # 1. mindset: don't summarize/fabricate
     ("page_markers", _RULE_PAGE_MARKERS),   # 2. infra: page boundary markers
-    ("skip",         _RULE_SKIP),           # 3. exclusions: headers/footers/TOC
+    ("skip",         _RULE_SKIP),           # 3. exclusions: headers/footers/watermarks
     ("headings",     _RULE_HEADINGS),       # 4. structure: section hierarchy
     ("formatting",   _RULE_FORMATTING),     # 5. style: sup/sub, dashes, italics
     ("formulas",     _RULE_FORMULAS),       # 6. content: math notation
