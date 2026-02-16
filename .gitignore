@@ -12,4 +12,4 @@ build/
 .pytest_cache/
 .DS_Store
 *.DS_Store
-samples/*.chunks/
+samples/**/*.chunks/

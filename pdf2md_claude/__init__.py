@@ -47,6 +47,7 @@ def __getattr__(name: str):
         "PAGE_END": "pdf2md_claude.markers",
         # pdf2md_claude.images
         "extract_and_inject_images": "pdf2md_claude.images",
+        "ImageMode": "pdf2md_claude.images",
         "ImageRect": "pdf2md_claude.images",
         "RenderedImage": "pdf2md_claude.images",
         # pdf2md_claude.merger
@@ -88,6 +89,7 @@ __all__ = [
     "create_client",
     "convert_pdf",
     "extract_and_inject_images",
+    "ImageMode",
     "ImageRect",
     "MarkerDef",
     "PAGE_BEGIN",

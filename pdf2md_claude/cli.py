@@ -21,6 +21,7 @@ import colorlog
 
 from pdf2md_claude.client import create_client
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, needs_conversion
+from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, DocumentUsageStats, format_summary
 from pdf2md_claude.pipeline import convert_document, remerge_document
 from pdf2md_claude.prompt import SYSTEM_PROMPT
@@ -36,6 +37,9 @@ _log = logging.getLogger("pdf2md")
 
 DEFAULT_MODEL_ALIAS = "opus"
 """Short alias for the default model (key into ``MODELS`` dict)."""
+
+DEFAULT_IMAGE_DPI = 600
+"""Default DPI for page-region image rendering."""
 
 _SUMMARY_SEP = "=" * 78
 """Separator line for the conversion summary block."""
@@ -176,6 +180,24 @@ Examples:
         help="Skip image extraction. By default, IMAGE_RECT bounding boxes "
              "emitted by Claude are rendered from the PDF and injected as "
              "image files alongside the Markdown output.",
+    )
+    parser.add_argument(
+        "--image-mode",
+        choices=[m.value for m in ImageMode],
+        default=ImageMode.AUTO.value,
+        help="Image extraction mode: 'auto' extracts native rasters when "
+             "possible with render fallback; 'snap' renders page regions "
+             "snapped to PDF raster bounds; 'bbox' renders AI-based "
+             "bounding box directly; 'debug' renders all variants "
+             "side-by-side in an HTML table (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--image-dpi",
+        type=int,
+        default=DEFAULT_IMAGE_DPI,
+        metavar="DPI",
+        help="DPI for page-region rendering — vector diagrams, composites, "
+             f"and snap/bbox modes (default: {DEFAULT_IMAGE_DPI}).",
     )
     parser.add_argument(
         "--model",
@@ -352,10 +374,14 @@ Examples:
                             )
                         system_prompt = rules_cache[resolved_rules]
 
+                image_mode = ImageMode(args.image_mode)
+
                 if remerge:
                     result = remerge_document(
                         output_file, pdf_path=pdf_path,
                         extract_images=not args.no_images,
+                        image_mode=image_mode,
+                        image_dpi=args.image_dpi,
                     )
                 else:
                     assert client is not None
@@ -366,6 +392,8 @@ Examples:
                         pages_per_chunk=pages_per_chunk,
                         force=args.force,
                         extract_images=not args.no_images,
+                        image_mode=image_mode,
+                        image_dpi=args.image_dpi,
                         system_prompt=system_prompt,
                     )
                 all_stats.append(result.stats)

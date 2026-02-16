@@ -39,9 +39,9 @@ _PREAMBLE_BODY = (
 
 _PREAMBLE_CLOSING = "Follow these rules strictly:"
 
-# ---- Global principles (mindset before content) ----
+# ---- Framework (structural skeleton) ----
 
-# Rule 1 — Content fidelity
+# Rule — Content fidelity
 _RULE_FIDELITY = """\
 **Content fidelity** (CRITICAL): Do NOT summarize, paraphrase, or omit any \
 content. Every paragraph, table, image, note, warning, and \
@@ -59,20 +59,30 @@ sections you can see in the TOC but that are not on the pages provided. \
 Each page's markdown must correspond to what is actually printed on that \
 physical page."""
 
-# Rule 2 — Inline formatting (applies to ALL output)
-_RULE_FORMATTING = """\
-**Inline formatting** (applies everywhere — body text AND tables):
-   - Superscripts: ALWAYS use `<sup>`, not Unicode superscript characters \
-(e.g., write `a<sup>2</sup>` not `a²`). This ensures full character \
-coverage and consistent rendering.
-   - Subscripts: ALWAYS use `<sub>`, not Unicode subscript characters \
-(e.g., write `H<sub>2</sub>O` not `H₂O`).
-   - Dashes: use an en-dash `–` for numeric ranges and list bullets; \
-use a hyphen `-` only in compound words.
-   - Italics in body text: use Markdown `*text*`. Inside HTML tables: \
-use `<em>text</em>`."""
+# Rule — Page markers
+_RULE_PAGE_MARKERS = f"""\
+**Page markers** (CRITICAL): Wrap EVERY page's content with a begin/end \
+marker pair. Missing page markers are treated as conversion errors.
+   - Place `{_PB}` at the start and `{_PE}` at the end of each page.
+   - Emit markers for EVERY page in the range — even blank pages, \
+image-only pages, or skipped content (e.g., Table of Contents).
+   - For skipped pages, place `{_PS}` between the markers (see the **Skip** rule).
+   - N is the original document page number — the correct page range \
+will be specified in the conversion instructions.
+   - Example structure:
+   ```
+   {PAGE_BEGIN.format(5)}
+   ...page 5 content...
+   {PAGE_END.format(5)}
+   {PAGE_BEGIN.format(6)}
+   {_PS}
+   {PAGE_END.format(6)}
+   {PAGE_BEGIN.format(7)}
+   ...page 7 content...
+   {PAGE_END.format(7)}
+   ```"""
 
-# Rule 3 — Skip elements
+# Rule — Skip elements
 _RULE_SKIP = f"""\
 **Skip**: Page headers, page footers, page numbers, watermarks, and \
 copyright/license lines. Do NOT include the Table of Contents \
@@ -88,9 +98,9 @@ markers to signal the skip is intentional:
    This preserves correct page numbering. NEVER silently omit page \
 markers — every page in the range must have a begin/end pair."""
 
-# ---- Content types (structure, then specific elements) ----
+# ---- Content (formatting and elements) ----
 
-# Rule 4 — Headings
+# Rule — Headings
 _RULE_HEADINGS = """\
 **Headings**: Preserve the document's section numbering and hierarchy. \
 Count the dot-separated numbers to determine Markdown heading depth:
@@ -100,7 +110,25 @@ Count the dot-separated numbers to determine Markdown heading depth:
    - `####` — sub-subsections (e.g. "11.2.1 General")
    - `#####` — deeper levels (e.g. "9.2.2.2 Standby")"""
 
-# Rule 5 — Tables
+# Rule — Inline formatting (applies to ALL output)
+_RULE_FORMATTING = """\
+**Inline formatting** (applies everywhere — body text AND tables):
+   - Superscripts: ALWAYS use `<sup>`, not Unicode superscript characters \
+(e.g., write `a<sup>2</sup>` not `a²`). This ensures full character \
+coverage and consistent rendering.
+   - Subscripts: ALWAYS use `<sub>`, not Unicode subscript characters \
+(e.g., write `H<sub>2</sub>O` not `H₂O`).
+   - Dashes: use an en-dash `–` for numeric ranges and list bullets; \
+use a hyphen `-` only in compound words.
+   - Italics in body text: use Markdown `*text*`. Inside HTML tables: \
+use `<em>text</em>`."""
+
+# Rule — Formulas
+_RULE_FORMULAS = """\
+**Formulas**: Preserve mathematical formulas using LaTeX notation in `$$` \
+blocks. Inline formulas use `$...$`."""
+
+# Rule — Tables
 _RULE_TABLES = f"""\
 **Tables**: ALWAYS use HTML `<table>` format for ALL tables, even simple ones.
    - Use `<thead>` for header rows and `<tbody>` for data rows.
@@ -131,12 +159,7 @@ page), emit `{_TC}` on its own line immediately BEFORE the table title \
 or `<table>` tag. Still output the full table including its repeated headers \
 exactly as they appear in the PDF — the marker is metadata for post-processing."""
 
-# Rule 6 — Formulas
-_RULE_FORMULAS = """\
-**Formulas**: Preserve mathematical formulas using LaTeX notation in `$$` \
-blocks. Inline formulas use `$...$`."""
-
-# Rule 7 — Images (diagrams, figures, charts, illustrations)
+# Rule — Images (diagrams, figures, charts, illustrations)
 _RULE_IMAGES = f"""\
 **Images** (diagrams, figures, charts, illustrations): Wrap every image in \
 structured markers with a bounding box and a detailed description. \
@@ -144,12 +167,30 @@ Do NOT output `![...](...)` references — image files are generated \
 automatically in post-processing.
    - Wrap the entire image block with `{_IB}` and `{_IE}` markers.
    - **Bounding box**: Immediately after `{_IB}`, emit an `IMAGE_RECT` \
-marker with normalized coordinates (0.0–1.0, origin at top-left): \
+marker with normalized coordinates (0.0–1.0, origin at top-left, \
+x grows right, y grows down): \
 `<!-- IMAGE_RECT <x0>,<y0>,<x1>,<y1> -->`. Example: `{_IR}`.
-   - **Bounding box scope** (CRITICAL): The box must cover ONLY the visual \
-content (diagram, chart, photo, illustration). Do NOT include the figure \
-caption, figure number label, or surrounding body text — only the \
-graphical region.
+   - **Bounding box precision** (CRITICAL — read carefully): \
+Each edge must align with the outermost **drawn graphical primitive** \
+of the figure (lines, shapes, axes, arrows, data points). \
+Axis tick labels and data labels that are visually part of the graphic \
+are included. Post-processing adds a small padding margin, so aim for \
+the tightest box that still contains all graphical content — \
+err on the side of slightly tight rather than loose.
+     - **Top edge**: the topmost drawn element (e.g., top of a box, \
+highest axis tick, tallest bar). Do NOT extend upward into headings, \
+body text, page headers, or page numbers above the figure.
+     - **Bottom edge**: the bottommost drawn element (e.g., X-axis line, \
+lowest label of the graphic). Do NOT extend downward into the figure \
+caption or body text below.
+     - **Left / right edges**: the outermost drawn elements on each side.
+   - **Bounding box exclusions**: The box must NEVER include any of \
+the following — these are NOT part of the graphical content: \
+page numbers or running headers/footers; \
+figure captions in any language \
+(e.g., "Figure 3 – Dimming curve", "图 3. 调光曲线", "Рис. 3 — Кривая"); \
+figure number labels; section headings; \
+body text paragraphs above or below the figure.
    - **Caption**: Preserve the original caption exactly as it appears in \
 the PDF (e.g., "Figure 5 – Timing diagram") as a `**bold**` line inside \
 the image block.
@@ -175,50 +216,18 @@ content on the page.
    {_IE}
    ```"""
 
-# ---- Infrastructure / meta ----
-
-# Rule 8 — Page markers
-_RULE_PAGE_MARKERS = f"""\
-**Page markers** (CRITICAL): Wrap EVERY page's content with a begin/end \
-marker pair. Missing page markers are treated as conversion errors.
-   - Place `{_PB}` at the start and `{_PE}` at the end of each page.
-   - Emit markers for EVERY page in the range — even blank pages, \
-image-only pages, or skipped content (e.g., Table of Contents).
-   - For skipped pages, place `{_PS}` between the markers (see the **Skip** rule).
-   - N is the original document page number — the correct page range \
-will be specified in the conversion instructions.
-   - Example structure:
-   ```
-   {PAGE_BEGIN.format(5)}
-   ...page 5 content...
-   {PAGE_END.format(5)}
-   {PAGE_BEGIN.format(6)}
-   {_PS}
-   {PAGE_END.format(6)}
-   {PAGE_BEGIN.format(7)}
-   ...page 7 content...
-   {PAGE_END.format(7)}
-   ```"""
-
-# Rule 9 — Output format
-_RULE_OUTPUT = """\
-**Output**: Raw markdown only. No commentary, no wrapper text, no \
-"Here is the markdown" preamble. Start directly with the first content \
-heading."""
-
 
 # Named rule registry — each rule has a short key for programmatic access.
-# Ordering: global principles → content types → infrastructure/meta.
+# Ordering: framework (structural skeleton) → content (formatting and elements).
 _DEFAULT_REGISTRY: tuple[tuple[str, str], ...] = (
     ("fidelity",     _RULE_FIDELITY),       # 1. mindset: don't summarize/fabricate
-    ("formatting",   _RULE_FORMATTING),     # 2. style: sup/sub, dashes, italics
+    ("page_markers", _RULE_PAGE_MARKERS),   # 2. infra: page boundary markers
     ("skip",         _RULE_SKIP),           # 3. exclusions: headers/footers/TOC
     ("headings",     _RULE_HEADINGS),       # 4. structure: section hierarchy
-    ("tables",       _RULE_TABLES),         # 5. content: table format (most complex)
+    ("formatting",   _RULE_FORMATTING),     # 5. style: sup/sub, dashes, italics
     ("formulas",     _RULE_FORMULAS),       # 6. content: math notation
-    ("images",       _RULE_IMAGES),         # 7. content: images (diagrams/figures/charts)
-    ("page_markers", _RULE_PAGE_MARKERS),   # 8. infra: page boundary markers
-    ("output",       _RULE_OUTPUT),         # 9. meta: raw output, no commentary
+    ("tables",       _RULE_TABLES),         # 7. content: table format (most complex)
+    ("images",       _RULE_IMAGES),         # 8. content: images (diagrams/figures/charts)
 )
 
 # Backward-compatible unnamed rule list, derived from the registry.
