@@ -14,6 +14,7 @@ Checks for common problems in Claude's PDF-to-Markdown conversion:
 
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 from dataclasses import dataclass, field
@@ -70,6 +71,41 @@ _FIGURE_DEF_RE = re.compile(r"\*\*Figure\s+(\d+|[A-Z]\.\d+)\s*[–—-]")
 # Page markers: <!-- PDF_PAGE_BEGIN 42 --> / <!-- PDF_PAGE_END 42 -->
 _PAGE_MARKER_RE = PAGE_BEGIN.re_value
 _PAGE_END_MARKER_RE = PAGE_END.re_value
+
+# ---------------------------------------------------------------------------
+# Page-position helper — resolve the current page at any string offset
+# ---------------------------------------------------------------------------
+
+
+class _PageIndex:
+    """Pre-built index for fast page-number lookup by string position.
+
+    Scans the markdown once for all ``PAGE_BEGIN`` markers and builds a
+    sorted list of ``(position, page_number)`` pairs.  Individual lookups
+    are O(log n) via :func:`bisect.bisect_right`.
+    """
+
+    __slots__ = ("_positions", "_pages")
+
+    def __init__(self, markdown: str) -> None:
+        self._positions: list[int] = []
+        self._pages: list[int] = []
+        for m in _PAGE_MARKER_RE.finditer(markdown):
+            self._positions.append(m.start())
+            self._pages.append(int(m.group(1)))
+
+    def page_at(self, pos: int) -> int | None:
+        """Return the page number of the last PAGE_BEGIN before *pos*."""
+        idx = bisect.bisect_right(self._positions, pos) - 1
+        if idx < 0:
+            return None
+        return self._pages[idx]
+
+    def format_page(self, pos: int) -> str:
+        """Return ``' (page N)'`` or ``''`` if page is unknown."""
+        page = self.page_at(pos)
+        return f" (page {page})" if page is not None else ""
+
 
 # Known fabrication patterns — Claude's telltale signs of inventing content
 # instead of converting it from the PDF.
@@ -135,51 +171,75 @@ def validate_output(markdown: str) -> ValidationResult:
 
 def _check_missing_tables(markdown: str, result: ValidationResult) -> None:
     """Verify that all referenced tables are actually defined."""
-    # Collect all table references and definitions.
-    refs = set(_TABLE_REF_RE.findall(markdown))
+    # Collect all table definitions.
     defs = set(_TABLE_DEF_RE.findall(markdown))
-
-    # Only check numeric tables (not annex tables like B.1).
-    numeric_refs = {r for r in refs if r.isdigit()}
     numeric_defs = {d for d in defs if d.isdigit()}
 
-    missing = numeric_refs - numeric_defs
+    # Collect references with their positions for page lookup.
+    ref_positions: dict[str, list[int]] = {}
+    for m in _TABLE_REF_RE.finditer(markdown):
+        num = m.group(1)
+        if num.isdigit():
+            ref_positions.setdefault(num, []).append(m.start())
+
+    missing = set(ref_positions) - numeric_defs
     if missing:
+        pidx = _PageIndex(markdown)
         # Sort numerically for readability.
         for t in sorted(missing, key=int):
+            pages = sorted({pidx.page_at(p) for p in ref_positions[t]} - {None})
+            page_suffix = (
+                f" (referenced on page {', '.join(str(p) for p in pages)})"
+                if pages else ""
+            )
             result.warnings.append(
-                f"Table {t} is referenced in text but not defined in output"
+                f"Table {t} is referenced in text but not defined"
+                f" in output{page_suffix}"
             )
 
 
 def _check_missing_figures(markdown: str, result: ValidationResult) -> None:
     """Verify that all referenced figures are actually defined."""
-    # Collect all figure references and definitions.
-    refs = set(_FIGURE_REF_RE.findall(markdown))
+    # Collect all figure definitions.
     defs = set(_FIGURE_DEF_RE.findall(markdown))
-
-    # Only check numeric figures (not annex figures like A.1).
-    numeric_refs = {r for r in refs if r.isdigit()}
     numeric_defs = {d for d in defs if d.isdigit()}
 
-    missing = numeric_refs - numeric_defs
+    # Collect references with their positions for page lookup.
+    ref_positions: dict[str, list[int]] = {}
+    for m in _FIGURE_REF_RE.finditer(markdown):
+        num = m.group(1)
+        if num.isdigit():
+            ref_positions.setdefault(num, []).append(m.start())
+
+    missing = set(ref_positions) - numeric_defs
     if missing:
+        pidx = _PageIndex(markdown)
         # Sort numerically for readability.
         for f in sorted(missing, key=int):
+            pages = sorted({pidx.page_at(p) for p in ref_positions[f]} - {None})
+            page_suffix = (
+                f" (referenced on page {', '.join(str(p) for p in pages)})"
+                if pages else ""
+            )
             result.warnings.append(
-                f"Figure {f} is referenced in text but not defined in output"
+                f"Figure {f} is referenced in text but not defined"
+                f" in output{page_suffix}"
             )
 
 
 def _check_fabrication(markdown: str, result: ValidationResult) -> None:
     """Detect patterns that indicate Claude fabricated summary text."""
+    pidx: _PageIndex | None = None
     for name, pattern in _FABRICATION_PATTERNS:
         match = pattern.search(markdown)
         if match:
+            if pidx is None:
+                pidx = _PageIndex(markdown)
             # Show the matched text (truncated) for context.
             snippet = match.group(0)[:100]
+            page_suffix = pidx.format_page(match.start())
             result.errors.append(
-                f"Possible fabricated {name}: \"{snippet}\""
+                f"Possible fabricated {name}{page_suffix}: \"{snippet}\""
             )
 
 
@@ -487,24 +547,36 @@ _SECTION_HEADING_RE = re.compile(
 
 def _check_heading_sequence(markdown: str, result: ValidationResult) -> None:
     """Warn if numbered section headings have gaps (missing sections)."""
-    headings = _SECTION_HEADING_RE.findall(markdown)
+    matches = list(_SECTION_HEADING_RE.finditer(markdown))
 
-    if len(headings) < 2:
+    if len(matches) < 2:
         return
 
     # Check top-level sections (e.g., 1, 2, 3, ...) for gaps.
-    top_level = []
-    for h in headings:
-        parts = h.split(".")
+    # Each entry: (section_number, match_position).
+    top_level: list[tuple[int, int]] = []
+    for m in matches:
+        heading = m.group(1)
+        parts = heading.split(".")
         if len(parts) == 1 and parts[0].isdigit():
-            top_level.append(int(parts[0]))
+            top_level.append((int(parts[0]), m.start()))
 
+    if len(top_level) < 2:
+        return
+
+    pidx: _PageIndex | None = None
     for i in range(1, len(top_level)):
-        gap = top_level[i] - top_level[i - 1]
+        cur_num, cur_pos = top_level[i]
+        prev_num, _prev_pos = top_level[i - 1]
+        gap = cur_num - prev_num
         if gap > 1:
+            if pidx is None:
+                pidx = _PageIndex(markdown)
+            page_suffix = pidx.format_page(cur_pos)
             result.warnings.append(
-                f"Section gap: section {top_level[i - 1]} jumps to "
-                f"section {top_level[i]} (missing {gap - 1} sections)"
+                f"Section gap: section {prev_num} jumps to "
+                f"section {cur_num} (missing {gap - 1} sections)"
+                f"{page_suffix}"
             )
 
 
@@ -673,8 +745,9 @@ def _check_table_column_consistency(
 
     Parses colspan/rowspan attributes to compute the effective column count
     per row.  Mismatches are reported as warnings with the table title
-    (if available) and the row index / counts involved.
+    (if available), page number, and the row index / counts involved.
     """
+    pidx: _PageIndex | None = None
     for table_match in TABLE_BLOCK_RE.finditer(markdown):
         table_html = table_match.group(0)
         counts = _compute_table_column_counts(table_html)
@@ -694,10 +767,13 @@ def _check_table_column_consistency(
 
         title = _find_table_title(markdown, table_match.start())
         label = title if title else "HTML table"
+        if pidx is None:
+            pidx = _PageIndex(markdown)
+        page_suffix = pidx.format_page(table_match.start())
 
         for row_idx, actual in mismatches:
             result.warnings.append(
-                f"{label}: row {row_idx} has {actual} columns, "
+                f"{label}{page_suffix}: row {row_idx} has {actual} columns, "
                 f"expected {expected}"
             )
 
@@ -710,6 +786,7 @@ def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:
     the same table are monotonically increasing. Duplicates or backward
     jumps indicate Claude misread the PDF.
     """
+    pidx: _PageIndex | None = None
     for table_match in TABLE_BLOCK_RE.finditer(markdown):
         table_html = table_match.group(0)
         bin_values = _BINARY_IN_TD_RE.findall(table_html)
@@ -717,17 +794,24 @@ def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:
         if len(bin_values) < 2:
             continue
 
+        # Resolve table context (title + page) once per table.
+        title = _find_table_title(markdown, table_match.start())
+        if pidx is None:
+            pidx = _PageIndex(markdown)
+        page_suffix = pidx.format_page(table_match.start())
+        label = title if title else "HTML table"
+
         # Convert to integers for comparison.
         int_values = [int(v.replace(" ", ""), 2) for v in bin_values]
 
         for i in range(1, len(int_values)):
             if int_values[i] == int_values[i - 1]:
                 result.warnings.append(
-                    f"Duplicate binary value in table: {bin_values[i]}b "
-                    f"appears twice consecutively"
+                    f"Duplicate binary value in {label}{page_suffix}: "
+                    f"{bin_values[i]}b appears twice consecutively"
                 )
             elif int_values[i] < int_values[i - 1]:
                 result.warnings.append(
-                    f"Binary sequence not monotonic in table: "
+                    f"Binary sequence not monotonic in {label}{page_suffix}: "
                     f"{bin_values[i]}b follows {bin_values[i - 1]}b"
                 )

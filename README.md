@@ -145,7 +145,7 @@ pdf2md-claude show-prompt --rules my_rules.txt
 | `@add after NAME` | New rule inserted after the named rule (or `preamble`) |
 
 **Valid names**: `preamble`, `fidelity`, `formatting`, `skip`, `headings`,
-`tables`, `formulas`, `images`, `page_markers`, `output`
+`tables`, `formulas`, `images`, `page_markers`
 
 Lines starting with `;` are comments (stripped from rule text). Lines starting
 with `#` are preserved (useful for Markdown headings inside rules).
@@ -193,6 +193,7 @@ pdf2md-claude/
 │   └── workdir.py              # Chunk persistence, resume, and work directory management
 ├── tests/                      # Unit tests
 │   ├── __init__.py
+│   ├── conftest.py             # Shared test fixtures
 │   ├── test_cli.py
 │   ├── test_converter.py
 │   ├── test_images.py

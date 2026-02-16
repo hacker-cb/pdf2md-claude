@@ -5,6 +5,7 @@ import pytest
 from pdf2md_claude.markers import PAGE_SKIP
 from pdf2md_claude.validator import (
     ValidationResult,
+    _PageIndex,
     check_page_fidelity,
     validate_output,
     _significant_words,
@@ -1050,3 +1051,160 @@ class TestTableColumnConsistency:
         warnings = self._col_warnings(r)
         assert len(warnings) == 1
         assert "HTML table" in warnings[0]
+
+    def test_page_number_in_warning(self):
+        """Warning message should include the page number."""
+        md = _make_pages({
+            5: (
+                "**Table 10 – Commands**\n\n"
+                "<table>\n"
+                "<thead><tr><th>A</th><th>B</th></tr></thead>\n"
+                "<tbody><tr><td>1</td><td>2</td><td>3</td></tr></tbody>\n"
+                "</table>\n"
+            ),
+        })
+        r = validate_output(md)
+        warnings = self._col_warnings(r)
+        assert len(warnings) == 1
+        assert "page 5" in warnings[0]
+        assert "Table 10" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# _PageIndex helper
+# ---------------------------------------------------------------------------
+
+class TestPageIndex:
+    """Tests for the _PageIndex page-position lookup helper."""
+
+    def test_basic_lookup(self):
+        md = _make_pages({1: "aaa\n", 2: "bbb\n", 3: "ccc\n"})
+        pidx = _PageIndex(md)
+        # Position 0 is before the first marker.
+        # A position after the page 2 marker should resolve to page 2.
+        pos = md.index("bbb")
+        assert pidx.page_at(pos) == 2
+
+    def test_before_first_marker(self):
+        md = "Some preamble\n" + _make_pages({5: "content\n"})
+        pidx = _PageIndex(md)
+        assert pidx.page_at(0) is None
+
+    def test_format_page_with_page(self):
+        md = _make_pages({7: "content\n"})
+        pidx = _PageIndex(md)
+        pos = md.index("content")
+        assert pidx.format_page(pos) == " (page 7)"
+
+    def test_format_page_no_page(self):
+        md = "no markers here"
+        pidx = _PageIndex(md)
+        assert pidx.format_page(0) == ""
+
+
+# ---------------------------------------------------------------------------
+# Page numbers in _check_missing_tables
+# ---------------------------------------------------------------------------
+
+class TestMissingTablesPageNumbers:
+    """Verify that missing-table warnings include page numbers."""
+
+    def test_page_number_in_warning(self):
+        md = _make_pages({
+            3: "See Table 5 for details.\n",
+            7: "Also see Table 5 again.\n",
+        })
+        r = validate_output(md)
+        table_warnings = [w for w in r.warnings if "Table 5" in w]
+        assert len(table_warnings) == 1
+        assert "page 3" in table_warnings[0] or "page 7" in table_warnings[0]
+        # Both pages should be mentioned.
+        assert "3" in table_warnings[0] and "7" in table_warnings[0]
+
+    def test_no_page_suffix_without_markers(self):
+        """When there are no page markers, the warning should still work."""
+        md = "See Table 99 for details.\n"
+        # No page markers → validate_output will error on missing markers,
+        # but the table warning should still be produced (without page info).
+        r = validate_output(md)
+        table_warnings = [w for w in r.warnings if "Table 99" in w]
+        assert len(table_warnings) == 1
+        assert "not defined" in table_warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Page numbers in _check_missing_figures
+# ---------------------------------------------------------------------------
+
+class TestMissingFiguresPageNumbers:
+    """Verify that missing-figure warnings include page numbers."""
+
+    def test_page_number_in_warning(self):
+        md = _make_pages({
+            4: "See Figure 8 for the diagram.\n",
+        })
+        r = validate_output(md)
+        fig_warnings = [w for w in r.warnings if "Figure 8" in w]
+        assert len(fig_warnings) == 1
+        assert "page 4" in fig_warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Page numbers in _check_fabrication
+# ---------------------------------------------------------------------------
+
+class TestFabricationPageNumbers:
+    """Verify that fabrication errors include page numbers."""
+
+    def test_page_number_in_error(self):
+        md = _make_pages({
+            12: "presented as summary references for the commands\n",
+        })
+        r = validate_output(md)
+        fab_errors = [e for e in r.errors if "fabricat" in e.lower()]
+        assert len(fab_errors) >= 1
+        assert "page 12" in fab_errors[0]
+
+
+# ---------------------------------------------------------------------------
+# Page numbers in _check_heading_sequence
+# ---------------------------------------------------------------------------
+
+class TestHeadingSequencePageNumbers:
+    """Verify that section-gap warnings include page numbers."""
+
+    def test_page_number_in_gap_warning(self):
+        md = _make_pages({
+            2: "## 1 Scope\n",
+            5: "## 3 Definitions\n",
+        })
+        r = validate_output(md)
+        gap_warnings = [w for w in r.warnings if "Section gap" in w]
+        assert len(gap_warnings) == 1
+        assert "page 5" in gap_warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Page numbers in _check_binary_sequences
+# ---------------------------------------------------------------------------
+
+class TestBinarySequencesPageNumbers:
+    """Verify that binary-sequence warnings include page and table title."""
+
+    def test_page_and_title_in_warning(self):
+        md = _make_pages({
+            9: (
+                "**Table 3 – Opcodes**\n\n"
+                "<table>\n"
+                "<thead><tr><th>Opcode</th></tr></thead>\n"
+                "<tbody>\n"
+                "<tr><td>0001b</td></tr>\n"
+                "<tr><td>0001b</td></tr>\n"
+                "</tbody></table>\n"
+            ),
+        })
+        r = validate_output(md)
+        bin_warnings = [w for w in r.warnings if "binary" in w.lower()]
+        assert len(bin_warnings) >= 1
+        assert "page 9" in bin_warnings[0]
+        assert "Table 3" in bin_warnings[0]
