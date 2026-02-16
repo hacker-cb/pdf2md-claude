@@ -32,11 +32,12 @@ _IR = IMAGE_RECT_EXAMPLE  # <!-- IMAGE_RECT 0.02,0.15,0.98,0.65 -->
 # System prompt — individual rule definitions
 # ---------------------------------------------------------------------------
 
-_PREAMBLE = (
+_PREAMBLE_BODY = (
     "You are a precise document converter. "
-    "Convert the provided PDF pages to clean, well-structured Markdown. "
-    "Follow these rules strictly:"
+    "Convert the provided PDF pages to clean, well-structured Markdown."
 )
+
+_PREAMBLE_CLOSING = "Follow these rules strictly:"
 
 # ---- Global principles (mindset before content) ----
 
@@ -92,12 +93,12 @@ markers — every page in the range must have a begin/end pair."""
 # Rule 4 — Headings
 _RULE_HEADINGS = """\
 **Headings**: Preserve the document's section numbering and hierarchy. \
-Map the document's heading depth to Markdown levels: `#` for the document title, \
-`##` for top-level sections (e.g. "11 Definition of commands"), \
-`###` for subsections (e.g. "11.2 Overview sheets"), \
-`####` for sub-subsections (e.g. "11.2.1 General"), \
-`#####` for deeper levels (e.g. "9.2.2.2 Standby"). \
-Count the dot-separated numbers to determine depth."""
+Count the dot-separated numbers to determine Markdown heading depth:
+   - `#` — document title
+   - `##` — top-level sections (e.g. "11 Definition of commands")
+   - `###` — subsections (e.g. "11.2 Overview sheets")
+   - `####` — sub-subsections (e.g. "11.2.1 General")
+   - `#####` — deeper levels (e.g. "9.2.2.2 Standby")"""
 
 # Rule 5 — Tables
 _RULE_TABLES = f"""\
@@ -157,17 +158,13 @@ output a blockquote (`> ...`) with a thorough description: all labeled \
 elements, axes, values, arrows, connections, states, transitions, and \
 spatial relationships. Include enough detail that a reader who cannot see \
 the image can fully understand it.
-   - **Flowcharts / state diagrams**: Convert to Mermaid code blocks \
-(```mermaid ... ```) when the structure is clear enough to reproduce. \
-Place inside the description markers; still include a brief blockquote \
-summary below the Mermaid block.
    - **No content extraction from figures**: Content visible inside a figure \
 (e.g., tables in screenshots, text in diagrams, code in panels) must NOT \
 be reproduced as standalone text, tables, or code blocks outside the image \
 block. The figure is already captured by its bounding box and AI \
 description. Only convert content that exists as first-class document \
 content on the page.
-   - Example structure:
+   - Example:
    ```
    {_IB}
    {_IR}
@@ -182,14 +179,15 @@ content on the page.
 
 # Rule 8 — Page markers
 _RULE_PAGE_MARKERS = f"""\
-**Page markers** (CRITICAL): You MUST wrap EVERY page's content with a pair \
-of markers: `{_PB}` at the start and `{_PE}` at the end. \
-Emit these for EVERY page in the specified range, even if a page is blank, \
-contains only images, or its content is skipped (e.g., Table of Contents). \
-For skipped pages, place `{_PS}` between the markers (see rule 3). \
-N is the original document page number — the correct page range will be \
-specified in the conversion instructions. \
-Missing page markers are treated as conversion errors. Example structure:
+**Page markers** (CRITICAL): Wrap EVERY page's content with a begin/end \
+marker pair. Missing page markers are treated as conversion errors.
+   - Place `{_PB}` at the start and `{_PE}` at the end of each page.
+   - Emit markers for EVERY page in the range — even blank pages, \
+image-only pages, or skipped content (e.g., Table of Contents).
+   - For skipped pages, place `{_PS}` between the markers (see the **Skip** rule).
+   - N is the original document page number — the correct page range \
+will be specified in the conversion instructions.
+   - Example structure:
    ```
    {PAGE_BEGIN.format(5)}
    ...page 5 content...
@@ -209,32 +207,48 @@ _RULE_OUTPUT = """\
 heading."""
 
 
-# Ordered rule list — auto-numbered when building the system prompt.
+# Named rule registry — each rule has a short key for programmatic access.
 # Ordering: global principles → content types → infrastructure/meta.
-_RULES: list[str] = [
-    _RULE_FIDELITY,       # 1. mindset: don't summarize/fabricate
-    _RULE_FORMATTING,     # 2. style: sup/sub, dashes, italics
-    _RULE_SKIP,           # 3. exclusions: headers/footers/TOC
-    _RULE_HEADINGS,       # 4. structure: section hierarchy
-    _RULE_TABLES,         # 5. content: table format (most complex)
-    _RULE_FORMULAS,       # 6. content: math notation
-    _RULE_IMAGES,         # 7. content: images (diagrams/figures/charts)
-    _RULE_PAGE_MARKERS,   # 8. infra: page boundary markers
-    _RULE_OUTPUT,         # 9. meta: raw output, no commentary
-]
+_DEFAULT_REGISTRY: tuple[tuple[str, str], ...] = (
+    ("fidelity",     _RULE_FIDELITY),       # 1. mindset: don't summarize/fabricate
+    ("formatting",   _RULE_FORMATTING),     # 2. style: sup/sub, dashes, italics
+    ("skip",         _RULE_SKIP),           # 3. exclusions: headers/footers/TOC
+    ("headings",     _RULE_HEADINGS),       # 4. structure: section hierarchy
+    ("tables",       _RULE_TABLES),         # 5. content: table format (most complex)
+    ("formulas",     _RULE_FORMULAS),       # 6. content: math notation
+    ("images",       _RULE_IMAGES),         # 7. content: images (diagrams/figures/charts)
+    ("page_markers", _RULE_PAGE_MARKERS),   # 8. infra: page boundary markers
+    ("output",       _RULE_OUTPUT),         # 9. meta: raw output, no commentary
+)
+
+# Backward-compatible unnamed rule list, derived from the registry.
+_RULES: list[str] = [text for _, text in _DEFAULT_REGISTRY]
 
 
-def _build_system_prompt(rules: list[str]) -> str:
+def build_system_prompt(
+    rules: list[str],
+    preamble_body: str = _PREAMBLE_BODY,
+) -> str:
     """Assemble rules into a numbered system prompt.
 
     Each rule is prefixed with its 1-based index (``1. ...``, ``2. ...``)
     and joined with blank lines.
+
+    Parameters
+    ----------
+    rules:
+        Ordered list of rule texts (numbering is generated automatically).
+    preamble_body:
+        Introductory text placed before the closing "Follow these rules
+        strictly:" line.  Defaults to :data:`_PREAMBLE_BODY`.
     """
     numbered = [f"{i}. {rule}" for i, rule in enumerate(rules, 1)]
-    return _PREAMBLE + "\n\n" + "\n\n".join(numbered)
+    return (
+        preamble_body + "\n\n" + _PREAMBLE_CLOSING + "\n\n" + "\n\n".join(numbered)
+    )
 
 
-SYSTEM_PROMPT = _build_system_prompt(_RULES)
+SYSTEM_PROMPT = build_system_prompt(_RULES)
 
 
 # ---------------------------------------------------------------------------

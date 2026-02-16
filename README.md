@@ -85,9 +85,68 @@ Options:
   --pages-per-chunk N  Pages per conversion chunk (default: 10)
   --no-images          Skip image extraction from bounding-box markers
   --remerge            Re-merge from cached chunks (no API calls needed)
+  --init-rules [FILE]  Generate a rules template (default: .pdf2md.rules)
+  --rules FILE         Custom rules file (replace/append/add rules)
+  --show-prompt        Print the system prompt to stdout and exit
 ```
 
 Run without arguments to display help.
+
+## Custom Rules
+
+Customize the system prompt sent to Claude by creating a rules file. This lets
+you replace, extend, or add conversion rules without editing source code.
+
+**Auto-discovery**: Place a file named `.pdf2md.rules` next to your PDF and it
+will be applied automatically (no `--rules` flag needed).
+
+### Quick Start
+
+```bash
+# Generate a fully commented template
+pdf2md-claude --init-rules
+
+# Edit .pdf2md.rules to your needs, then convert
+pdf2md-claude document.pdf
+
+# Or use an explicit rules file
+pdf2md-claude document.pdf --rules my_rules.txt
+
+# Preview the merged system prompt
+pdf2md-claude --show-prompt
+pdf2md-claude --rules my_rules.txt --show-prompt
+```
+
+### Directives
+
+| Directive | Description |
+|---|---|
+| `@replace NAME` | Completely replace a built-in rule (or `preamble`) |
+| `@append NAME` | Add text to the end of a built-in rule (or `preamble`) |
+| `@add` | New rule appended after all others |
+| `@add after NAME` | New rule inserted after the named rule (or `preamble`) |
+
+**Valid names**: `preamble`, `fidelity`, `formatting`, `skip`, `headings`,
+`tables`, `formulas`, `images`, `page_markers`, `output`
+
+Lines starting with `;` are comments (stripped from rule text). Lines starting
+with `#` are preserved (useful for Markdown headings inside rules).
+
+### Example Rules File
+
+```
+; Custom rules for IEC standards
+@append preamble
+The source document is in Chinese. Translate all content to English.
+
+@replace tables
+**Tables**: Use Markdown pipe tables for simple tables.
+
+@add
+**Code blocks**: Preserve all code listings with fenced blocks.
+```
+
+Use `--show-prompt` to inspect the final merged prompt before converting.
 
 ## Environment
 
@@ -111,6 +170,7 @@ pdf2md-claude/
 │   ├── models.py               # Model configurations, pricing, usage tracking
 │   ├── pipeline.py             # Single-document orchestration (convert → merge → validate → write)
 │   ├── prompt.py               # Prompts for Claude PDF conversion
+│   ├── rules.py                # Custom rules file parsing and prompt customization
 │   ├── validator.py            # Content validation (page markers, tables, fabrication, etc.)
 │   └── workdir.py              # Chunk persistence, resume, and work directory management
 ├── tests/                      # Unit tests
@@ -118,6 +178,7 @@ pdf2md-claude/
 │   ├── test_converter.py
 │   ├── test_images.py
 │   ├── test_markers.py
+│   ├── test_rules.py
 │   ├── test_table_merger.py
 │   ├── test_validator.py
 │   └── test_workdir.py

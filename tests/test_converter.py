@@ -5,7 +5,13 @@ import pytest
 from pdf2md_claude.converter import _get_context_tail, _remap_page_markers
 from pdf2md_claude.markers import PAGE_BEGIN, PAGE_END
 from pdf2md_claude.merger import merge_chunks
-from pdf2md_claude.prompt import CONVERT_CHUNK_PROMPT, SYSTEM_PROMPT, _RULES
+from pdf2md_claude.prompt import (
+    CONVERT_CHUNK_PROMPT,
+    SYSTEM_PROMPT,
+    _DEFAULT_REGISTRY,
+    _RULES,
+    build_system_prompt,
+)
 from pdf2md_claude.validator import (
     ValidationResult,
     _check_binary_sequences,
@@ -289,6 +295,20 @@ class TestSystemPrompt:
     def test_rule_count(self):
         """SYSTEM_PROMPT should contain exactly 9 numbered rules."""
         assert len(_RULES) == 9
+        assert len(_DEFAULT_REGISTRY) == 9
+
+    def test_registry_derives_rules(self):
+        """_RULES should be derived from _DEFAULT_REGISTRY."""
+        assert _RULES == [text for _, text in _DEFAULT_REGISTRY]
+
+    def test_rule_names_unique(self):
+        """All rule names in the registry should be unique."""
+        names = [name for name, _ in _DEFAULT_REGISTRY]
+        assert len(names) == len(set(names))
+
+    def test_build_system_prompt_matches_constant(self):
+        """build_system_prompt(_RULES) should produce the same SYSTEM_PROMPT."""
+        assert build_system_prompt(_RULES) == SYSTEM_PROMPT
 
     def test_all_rules_numbered(self):
         """Each rule should appear with its 1-based number prefix."""

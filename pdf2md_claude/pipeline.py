@@ -53,6 +53,7 @@ def convert_document(
     use_cache: bool = False,
     force: bool = False,
     extract_images: bool = True,
+    system_prompt: str | None = None,
 ) -> PipelineResult:
     """Run the full conversion pipeline for a single PDF.
 
@@ -78,6 +79,8 @@ def convert_document(
         use_cache: Enable prompt caching (1h TTL).
         force: If True, discard cached chunks and reconvert.
         extract_images: If True, render IMAGE_RECT regions and inject refs.
+        system_prompt: Optional override for the built-in system prompt.
+            When ``None`` (default), uses ``SYSTEM_PROMPT``.
 
     Returns:
         :class:`PipelineResult` with stats, validation, and output path.
@@ -95,6 +98,7 @@ def convert_document(
         max_pages=max_pages,
         use_cache=use_cache,
         pages_per_chunk=pages_per_chunk,
+        system_prompt=system_prompt,
     )
 
     # 4. Merge chunks by page markers (deterministic, no LLM).
