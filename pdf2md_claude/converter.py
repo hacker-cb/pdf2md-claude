@@ -513,6 +513,7 @@ class PdfConverter:
                 page_end=chunk.page_end,
                 page_count=chunk.page_count,
                 page_start_plus_1=chunk.page_start + 1,
+                page_start_plus_2=chunk.page_start + 2,
             )
 
             # 3. Convert via API.

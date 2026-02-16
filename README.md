@@ -77,7 +77,7 @@ The CLI uses subcommands. Run `pdf2md-claude COMMAND --help` for full options.
 ```
 pdf2md-claude convert PDF [PDF ...]         Convert PDFs to Markdown
 pdf2md-claude remerge PDF [PDF ...]         Re-merge from cached chunks (no API)
-pdf2md-claude validate FILE [FILE ...]      Validate existing .md files (no API)
+pdf2md-claude validate PDF [PDF ...]       Validate converted output (no API)
 pdf2md-claude show-prompt [--rules FILE]    Print the system prompt
 pdf2md-claude init-rules [PATH]             Generate a rules template
 ```

@@ -1,11 +1,13 @@
 """Content validation for converted markdown output.
 
 Checks for common problems in Claude's PDF-to-Markdown conversion:
-- Missing or non-monotonic page markers (BEGIN/END matching and gaps)
+- Page marker validation (BEGIN/END matching, monotonicity, gaps)
+- Image block pairing (IMAGE_BEGIN/IMAGE_END)
+- Heading sequence gaps at all depth levels (missing sections/subsections)
+- Duplicate numbered headings (same section number appears more than once)
+- Section ordering continuity (backward jumps in section numbering)
 - Missing tables (referenced but not defined)
 - Missing figures (referenced but not defined)
-- Heading sequence gaps (missing top-level sections)
-- Duplicate numbered headings (same section number appears more than once)
 - Non-monotonic or duplicate binary values in HTML tables
 - Table column-count consistency (rowspan/colspan mismatch detection)
 - Fabricated summaries (Claude inventing text to replace omitted content)
@@ -56,21 +58,10 @@ class ValidationResult:
             _log.info("  ℹ %s", i)
 
 
-# Table reference: "Table 17" or "Table B.1" etc.
-_TABLE_REF_RE = re.compile(r"\bTable\s+(\d+|[A-Z]\.\d+)\b")
-
-# Table definition: **Table 17 – Something** (bold heading above the table)
-_TABLE_DEF_RE = re.compile(r"\*\*Table\s+(\d+|[A-Z]\.\d+)\s*[–—-]")
-
-# Figure reference: "Figure 5" or "Figure A.1" etc.
-_FIGURE_REF_RE = re.compile(r"\bFigure\s+(\d+|[A-Z]\.\d+)\b")
-
-# Figure definition: **Figure 5 – Something** (bold caption in IMAGE block)
-_FIGURE_DEF_RE = re.compile(r"\*\*Figure\s+(\d+|[A-Z]\.\d+)\s*[–—-]")
-
 # Page markers: <!-- PDF_PAGE_BEGIN 42 --> / <!-- PDF_PAGE_END 42 -->
 _PAGE_MARKER_RE = PAGE_BEGIN.re_value
 _PAGE_END_MARKER_RE = PAGE_END.re_value
+
 
 # ---------------------------------------------------------------------------
 # Page-position helper — resolve the current page at any string offset
@@ -107,41 +98,9 @@ class _PageIndex:
         return f" (page {page})" if page is not None else ""
 
 
-# Known fabrication patterns — Claude's telltale signs of inventing content
-# instead of converting it from the PDF.
-_FABRICATION_PATTERNS: list[tuple[str, re.Pattern]] = [
-    (
-        "summary substitution",
-        re.compile(
-            r"(?:presented|shown|provided) as (?:summary|brief) "
-            r"(?:references?|overviews?)",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "complexity excuse",
-        re.compile(
-            r"Due to the complexity.*?(?:these are|they are|see|refer to)",
-            re.IGNORECASE | re.DOTALL,
-        ),
-    ),
-    (
-        "subclauses redirect",
-        re.compile(
-            r"(?:full|complete|detailed) (?:command )?(?:details|specifications?) "
-            r".*?(?:subclauses|sections?) (?:that follow|below)",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "omission note",
-        re.compile(
-            r"(?:content|table|data) (?:has been |is |was )?"
-            r"(?:omitted|summarized|abbreviated|condensed)",
-            re.IGNORECASE,
-        ),
-    ),
-]
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
 
 
 def validate_output(markdown: str) -> ValidationResult:
@@ -155,18 +114,337 @@ def validate_output(markdown: str) -> ValidationResult:
     """
     result = ValidationResult()
 
-    _check_missing_tables(markdown, result)
-    _check_missing_figures(markdown, result)
-    _check_fabrication(markdown, result)
+    # Structural markers
     _check_page_markers(markdown, result)
     _check_page_end_markers(markdown, result)
     _check_image_block_pairing(markdown, result)
+
+    # Document outline
     _check_heading_sequence(markdown, result)
     _check_duplicate_headings(markdown, result)
+    _check_section_continuity(markdown, result)
+
+    # Content references
+    _check_missing_tables(markdown, result)
+    _check_missing_figures(markdown, result)
+
+    # Table content quality
     _check_binary_sequences(markdown, result)
     _check_table_column_consistency(markdown, result)
 
+    # Content integrity
+    _check_fabrication(markdown, result)
+
     return result
+
+
+# ---------------------------------------------------------------------------
+# Structural markers
+# ---------------------------------------------------------------------------
+
+
+def _count_skipped_pages(markdown: str) -> int:
+    """Count pages containing a PDF_PAGE_SKIP marker."""
+    return len(PAGE_SKIP.re.findall(markdown))
+
+
+def _check_page_markers(markdown: str, result: ValidationResult) -> None:
+    """Verify that page markers are present, sequential, and without large gaps."""
+    markers = _PAGE_MARKER_RE.findall(markdown)
+
+    if not markers:
+        result.errors.append("No page markers found in output")
+        return
+
+    pages = [int(m) for m in markers]
+
+    # Count intentionally-skipped pages (PDF_PAGE_SKIP markers).
+    skipped = _count_skipped_pages(markdown)
+    skip_suffix = f" ({skipped} skipped)" if skipped else ""
+    result.info.append(
+        f"Page markers found: {len(pages)} markers, "
+        f"range {min(pages)}-{max(pages)}{skip_suffix}"
+    )
+
+    # Check for non-monotonic markers (pages going backward) — report ALL.
+    for i in range(1, len(pages)):
+        if pages[i] < pages[i - 1]:
+            result.errors.append(
+                f"Page markers not monotonic: page {pages[i]} "
+                f"follows page {pages[i - 1]}"
+            )
+
+    # Check for gaps (every page should have a marker).
+    for i in range(1, len(pages)):
+        gap = pages[i] - pages[i - 1]
+        if gap > 1:
+            result.errors.append(
+                f"Missing page marker(s): page {pages[i - 1]} jumps to "
+                f"page {pages[i]} (missing {gap - 1} page(s))"
+            )
+
+
+def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
+    """Verify that PDF_PAGE_END markers match PDF_PAGE_BEGIN markers."""
+    begin_pages = [int(m) for m in _PAGE_MARKER_RE.findall(markdown)]
+    end_pages = [int(m) for m in _PAGE_END_MARKER_RE.findall(markdown)]
+
+    if not end_pages:
+        if begin_pages:
+            result.errors.append(
+                "No PDF_PAGE_END markers found (PDF_PAGE_BEGIN markers present)"
+            )
+        return
+
+    result.info.append(
+        f"Page end markers found: {len(end_pages)} markers, "
+        f"range {min(end_pages)}-{max(end_pages)}"
+    )
+
+    # Every END page should have a matching BEGIN page.
+    begin_set = set(begin_pages)
+    end_set = set(end_pages)
+    unmatched_ends = end_set - begin_set
+    if unmatched_ends:
+        for p in sorted(unmatched_ends):
+            result.errors.append(
+                f"PDF_PAGE_END {p} has no matching PDF_PAGE_BEGIN"
+            )
+
+    # Every BEGIN page should have a matching END page.
+    missing_ends = begin_set - end_set
+    if missing_ends:
+        for p in sorted(missing_ends):
+            result.errors.append(
+                f"PDF_PAGE_BEGIN {p} has no matching PDF_PAGE_END"
+            )
+
+
+def _check_image_block_pairing(markdown: str, result: ValidationResult) -> None:
+    """Verify that IMAGE_BEGIN and IMAGE_END markers are properly paired.
+
+    Checks for:
+    - Unmatched IMAGE_BEGIN (opened but never closed).
+    - Unmatched IMAGE_END (closed without a preceding open).
+    - Nested IMAGE_BEGIN (opening inside an already-open block).
+    """
+    current_page: int | None = None
+    in_block = False
+    open_page: int | None = None
+    begin_count = 0
+    end_count = 0
+
+    for line in markdown.splitlines():
+        page_match = _PAGE_MARKER_RE.search(line)
+        if page_match:
+            current_page = int(page_match.group(1))
+
+        if IMAGE_BEGIN.re.search(line):
+            begin_count += 1
+            if in_block:
+                loc = f" (page {open_page})" if open_page else ""
+                result.errors.append(
+                    f"Nested IMAGE_BEGIN on page {current_page} — "
+                    f"previous block opened{loc} was not closed"
+                )
+            in_block = True
+            open_page = current_page
+
+        if IMAGE_END.re.search(line):
+            end_count += 1
+            if not in_block:
+                result.errors.append(
+                    f"IMAGE_END without matching IMAGE_BEGIN "
+                    f"on page {current_page}"
+                )
+            in_block = False
+            open_page = None
+
+    # Trailing unclosed block.
+    if in_block:
+        loc = f" on page {open_page}" if open_page else ""
+        result.errors.append(
+            f"IMAGE_BEGIN{loc} was never closed with IMAGE_END"
+        )
+
+    if begin_count or end_count:
+        result.info.append(
+            f"Image blocks: {begin_count} IMAGE_BEGIN, {end_count} IMAGE_END"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Document outline (section structure)
+# ---------------------------------------------------------------------------
+
+# Section heading pattern: matches numbered (9.2.1) and lettered (A.1, B.2.1)
+# section identifiers at the start of Markdown headings.
+_SECTION_HEADING_RE = re.compile(
+    r"^#{1,6}\s+((?:[A-Z]|\d+)(?:\.(?:[A-Z]|\d+))*)\s+", re.MULTILINE
+)
+
+
+def _section_sort_key(section: str) -> tuple:
+    """Sort key for section numbers: numeric parts by value, letters after."""
+    parts = section.split(".")
+    return tuple(
+        (0, int(p)) if p.isdigit() else (1, p) for p in parts
+    )
+
+
+def _check_heading_sequence(markdown: str, result: ValidationResult) -> None:
+    """Warn if numbered section headings have gaps at any depth level.
+
+    Groups sections by their parent prefix (e.g. all ``3.x`` sections share
+    parent ``"3"``, all ``9.5.x`` sections share parent ``"9.5"``) and checks
+    each group for numeric gaps in the last component.  Duplicate section
+    numbers (from overlapping chunks) are deduplicated before gap checking.
+    """
+    matches = list(_SECTION_HEADING_RE.finditer(markdown))
+
+    if len(matches) < 2:
+        return
+
+    # Group sections by parent prefix.
+    # Key: parent prefix string ("" for top-level, "3" for 3.x, "9.5" for 9.5.x).
+    # Value: list of (last_numeric_component, match_position).
+    siblings: dict[str, list[tuple[int, int]]] = {}
+
+    for m in matches:
+        heading = m.group(1)
+        parts = heading.split(".")
+        last = parts[-1]
+        if not last.isdigit():
+            continue  # Skip lettered components (e.g. annex "A")
+        parent = ".".join(parts[:-1])
+        siblings.setdefault(parent, []).append((int(last), m.start()))
+
+    pidx: _PageIndex | None = None
+
+    for parent, entries in siblings.items():
+        # Deduplicate: keep only the first occurrence of each number.
+        seen: dict[int, int] = {}
+        for num, pos in entries:
+            if num not in seen:
+                seen[num] = pos
+        sorted_entries = sorted(seen.items())
+
+        if len(sorted_entries) < 2:
+            continue
+
+        for i in range(1, len(sorted_entries)):
+            cur_num, cur_pos = sorted_entries[i]
+            prev_num, _prev_pos = sorted_entries[i - 1]
+            gap = cur_num - prev_num
+            if gap > 1:
+                if pidx is None:
+                    pidx = _PageIndex(markdown)
+                page_suffix = pidx.format_page(cur_pos)
+                # Build full section identifiers.
+                prev_id = f"{parent}.{prev_num}" if parent else str(prev_num)
+                cur_id = f"{parent}.{cur_num}" if parent else str(cur_num)
+                result.warnings.append(
+                    f"Section gap: section {prev_id} jumps to "
+                    f"section {cur_id} (missing {gap - 1} section(s))"
+                    f"{page_suffix}"
+                )
+
+
+def _check_duplicate_headings(markdown: str, result: ValidationResult) -> None:
+    """Warn if numbered section headings appear more than once.
+
+    Wrapped standards PDFs (e.g., national-body wrappers around core content)
+    often contain front-matter sections duplicated inside the wrapper.
+    This check detects identical section numbers that appear more than
+    once in the merged output, which usually indicates overlapping content
+    between a wrapper and the embedded document.
+
+    Each duplicate is reported on its own line with the PDF page numbers
+    where it appears.
+    """
+    # Build a map: section_number -> list of page numbers.
+    current_page: int | None = None
+    occurrences: dict[str, list[int]] = {}
+
+    for line in markdown.splitlines():
+        # Track current page from PAGE_BEGIN markers.
+        page_match = _PAGE_MARKER_RE.search(line)
+        if page_match:
+            current_page = int(page_match.group(1))
+            continue
+
+        heading_match = _SECTION_HEADING_RE.match(line)
+        if heading_match:
+            section = heading_match.group(1)
+            page = current_page if current_page is not None else 0
+            occurrences.setdefault(section, []).append(page)
+
+    # Filter to duplicates only.
+    duplicates = {s: pages for s, pages in occurrences.items() if len(pages) > 1}
+    if not duplicates:
+        return
+
+    sorted_sections = sorted(duplicates.keys(), key=_section_sort_key)
+    result.warnings.append(
+        f"Duplicate section headings: {len(sorted_sections)} sections "
+        f"appear more than once"
+    )
+    for section in sorted_sections:
+        pages = duplicates[section]
+        page_str = ", ".join(f"p{p}" for p in pages)
+        result.warnings.append(
+            f"  Section {section} appears {len(pages)} times "
+            f"(pages: {page_str})"
+        )
+
+
+def _check_section_continuity(markdown: str, result: ValidationResult) -> None:
+    """Check that section headings follow monotonically non-decreasing order.
+
+    Detects backward jumps in section numbering (e.g. section 4.7 followed
+    by section 3.24), which typically indicates overlapping chunk content
+    during chunked PDF conversion.
+
+    Equal consecutive sections are ignored here — they are already caught
+    by :func:`_check_duplicate_headings`.
+    """
+    matches = list(_SECTION_HEADING_RE.finditer(markdown))
+
+    if len(matches) < 2:
+        return
+
+    pidx: _PageIndex | None = None
+    for i in range(1, len(matches)):
+        cur_section = matches[i].group(1)
+        prev_section = matches[i - 1].group(1)
+        cur_key = _section_sort_key(cur_section)
+        prev_key = _section_sort_key(prev_section)
+
+        if cur_key < prev_key:
+            if pidx is None:
+                pidx = _PageIndex(markdown)
+            page_suffix = pidx.format_page(matches[i].start())
+            result.warnings.append(
+                f"Section ordering: {cur_section} follows "
+                f"{prev_section} (backward jump){page_suffix}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Content references (completeness)
+# ---------------------------------------------------------------------------
+
+# Table reference: "Table 17" or "Table B.1" etc.
+_TABLE_REF_RE = re.compile(r"\bTable\s+(\d+|[A-Z]\.\d+)\b")
+
+# Table definition: **Table 17 – Something** (bold heading above the table)
+_TABLE_DEF_RE = re.compile(r"\*\*Table\s+(\d+|[A-Z]\.\d+)\s*[–—-]")
+
+# Figure reference: "Figure 5" or "Figure A.1" etc.
+_FIGURE_REF_RE = re.compile(r"\bFigure\s+(\d+|[A-Z]\.\d+)\b")
+
+# Figure definition: **Figure 5 – Something** (bold caption in IMAGE block)
+_FIGURE_DEF_RE = re.compile(r"\*\*Figure\s+(\d+|[A-Z]\.\d+)\s*[–—-]")
 
 
 def _check_missing_tables(markdown: str, result: ValidationResult) -> None:
@@ -225,6 +503,227 @@ def _check_missing_figures(markdown: str, result: ValidationResult) -> None:
                 f"Figure {f} is referenced in text but not defined"
                 f" in output{page_suffix}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Table content quality
+# ---------------------------------------------------------------------------
+
+# Regex to extract binary values from HTML table cells.
+# Matches patterns like "0000b", "1010b", "01001111b" inside <td> content.
+_BINARY_IN_TD_RE = re.compile(
+    r"<td[^>]*>\s*([01]{4,8})b\s*</td>",
+)
+
+# Extract all <tr>...</tr> blocks from a table.
+_TR_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
+
+# Extract <td> or <th> cells with their attributes.
+_CELL_RE = re.compile(r"<(td|th)\b([^>]*)>", re.IGNORECASE)
+
+# Extract colspan="N" or rowspan="N" from cell attributes.
+_COLSPAN_RE = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
+_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
+
+# Table title: **Table 6 – Something** — captures full title text.
+_TABLE_TITLE_RE = re.compile(
+    r"\*\*Table\s+(?:\d+|[A-Z]\.\d+)\s*[–—-]\s*([^*]+)\*\*"
+)
+
+
+def _find_table_title(markdown: str, table_start: int) -> str | None:
+    """Find the **Table N – Title** line preceding a <table> tag.
+
+    Searches backwards up to 200 characters before the table start position.
+    Returns the full bold title (e.g. "Table 6 – Application extended commands")
+    or None if not found.
+    """
+    search_start = max(0, table_start - 200)
+    preceding = markdown[search_start:table_start]
+    # Find the last **Table N – ...** in the preceding text.
+    match = None
+    for m in _TABLE_DEF_RE.finditer(preceding):
+        match = m
+    if match is None:
+        return None
+    # Return the table number portion (e.g. "Table 6").
+    return f"Table {match.group(1)}"
+
+
+def _compute_table_column_counts(table_html: str) -> list[int]:
+    """Compute effective column count for each row in an HTML table.
+
+    Uses a grid-based rowspan tracker: each column slot records how many
+    more rows it is occupied by an earlier rowspan cell.
+
+    Returns:
+        List of effective column counts, one per <tr> row.
+    """
+    rows = _TR_RE.findall(table_html)
+    if not rows:
+        return []
+
+    # rowspan_remaining[col] = number of additional rows this slot is
+    # occupied by a prior rowspan cell (0 = free).
+    rowspan_remaining: list[int] = []
+    counts: list[int] = []
+
+    for row_html in rows:
+        cells = _CELL_RE.findall(row_html)
+
+        col = 0  # current column pointer
+        # Expand rowspan tracker if needed (first row sets initial size).
+        # We'll grow it dynamically as we discover the width.
+
+        for _tag, attrs in cells:
+            # Skip past columns occupied by rowspans from previous rows.
+            while col < len(rowspan_remaining) and rowspan_remaining[col] > 0:
+                rowspan_remaining[col] -= 1
+                col += 1
+
+            colspan_m = _COLSPAN_RE.search(attrs)
+            rowspan_m = _ROWSPAN_RE.search(attrs)
+            colspan = int(colspan_m.group(1)) if colspan_m else 1
+            rowspan = int(rowspan_m.group(1)) if rowspan_m else 1
+
+            # Place this cell: it occupies 'colspan' columns starting at 'col'.
+            for c in range(col, col + colspan):
+                # Grow the tracker if we're beyond current size.
+                while c >= len(rowspan_remaining):
+                    rowspan_remaining.append(0)
+                # Mark additional rows (rowspan - 1) as occupied.
+                if rowspan > 1:
+                    rowspan_remaining[c] = rowspan - 1
+            col += colspan
+
+        # Skip past any trailing columns still occupied by rowspans.
+        while col < len(rowspan_remaining) and rowspan_remaining[col] > 0:
+            rowspan_remaining[col] -= 1
+            col += 1
+
+        counts.append(col)
+
+    return counts
+
+
+def _check_table_column_consistency(
+    markdown: str, result: ValidationResult
+) -> None:
+    """Check that every row in each HTML table has the same column count.
+
+    Parses colspan/rowspan attributes to compute the effective column count
+    per row.  Mismatches are reported as warnings with the table title
+    (if available), page number, and the row index / counts involved.
+    """
+    pidx: _PageIndex | None = None
+    for table_match in TABLE_BLOCK_RE.finditer(markdown):
+        table_html = table_match.group(0)
+        counts = _compute_table_column_counts(table_html)
+
+        if len(counts) < 2:
+            continue
+
+        # Use the maximum count as the expected column count (most rows
+        # agree on the correct width; mismatches are typically fewer).
+        expected = max(counts)
+
+        mismatches = [
+            (i, c) for i, c in enumerate(counts) if c != expected
+        ]
+        if not mismatches:
+            continue
+
+        title = _find_table_title(markdown, table_match.start())
+        label = title if title else "HTML table"
+        if pidx is None:
+            pidx = _PageIndex(markdown)
+        page_suffix = pidx.format_page(table_match.start())
+
+        for row_idx, actual in mismatches:
+            result.warnings.append(
+                f"{label}{page_suffix}: row {row_idx} has {actual} columns, "
+                f"expected {expected}"
+            )
+
+
+def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:
+    """Check for duplicate or non-monotonic binary values in HTML tables.
+
+    Scans each HTML table for ``<td>`` cells containing binary values
+    (e.g., ``0101b``) and verifies that consecutive binary values within
+    the same table are monotonically increasing. Duplicates or backward
+    jumps indicate Claude misread the PDF.
+    """
+    pidx: _PageIndex | None = None
+    for table_match in TABLE_BLOCK_RE.finditer(markdown):
+        table_html = table_match.group(0)
+        bin_values = _BINARY_IN_TD_RE.findall(table_html)
+
+        if len(bin_values) < 2:
+            continue
+
+        # Resolve table context (title + page) once per table.
+        title = _find_table_title(markdown, table_match.start())
+        if pidx is None:
+            pidx = _PageIndex(markdown)
+        page_suffix = pidx.format_page(table_match.start())
+        label = title if title else "HTML table"
+
+        # Convert to integers for comparison.
+        int_values = [int(v.replace(" ", ""), 2) for v in bin_values]
+
+        for i in range(1, len(int_values)):
+            if int_values[i] == int_values[i - 1]:
+                result.warnings.append(
+                    f"Duplicate binary value in {label}{page_suffix}: "
+                    f"{bin_values[i]}b appears twice consecutively"
+                )
+            elif int_values[i] < int_values[i - 1]:
+                result.warnings.append(
+                    f"Binary sequence not monotonic in {label}{page_suffix}: "
+                    f"{bin_values[i]}b follows {bin_values[i - 1]}b"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Content integrity (fabrication detection)
+# ---------------------------------------------------------------------------
+
+# Known fabrication patterns — Claude's telltale signs of inventing content
+# instead of converting it from the PDF.
+_FABRICATION_PATTERNS: list[tuple[str, re.Pattern]] = [
+    (
+        "summary substitution",
+        re.compile(
+            r"(?:presented|shown|provided) as (?:summary|brief) "
+            r"(?:references?|overviews?)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "complexity excuse",
+        re.compile(
+            r"Due to the complexity.*?(?:these are|they are|see|refer to)",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    ),
+    (
+        "subclauses redirect",
+        re.compile(
+            r"(?:full|complete|detailed) (?:command )?(?:details|specifications?) "
+            r".*?(?:subclauses|sections?) (?:that follow|below)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "omission note",
+        re.compile(
+            r"(?:content|table|data) (?:has been |is |was )?"
+            r"(?:omitted|summarized|abbreviated|condensed)",
+            re.IGNORECASE,
+        ),
+    ),
+]
 
 
 def _check_fabrication(markdown: str, result: ValidationResult) -> None:
@@ -406,412 +905,3 @@ def check_page_fidelity(
                 )
     finally:
         doc.close()
-
-
-def _count_skipped_pages(markdown: str) -> int:
-    """Count pages containing a PDF_PAGE_SKIP marker."""
-    return len(PAGE_SKIP.re.findall(markdown))
-
-
-def _check_page_markers(markdown: str, result: ValidationResult) -> None:
-    """Verify that page markers are present, sequential, and without large gaps."""
-    markers = _PAGE_MARKER_RE.findall(markdown)
-
-    if not markers:
-        result.errors.append("No page markers found in output")
-        return
-
-    pages = [int(m) for m in markers]
-
-    # Count intentionally-skipped pages (PDF_PAGE_SKIP markers).
-    skipped = _count_skipped_pages(markdown)
-    skip_suffix = f" ({skipped} skipped)" if skipped else ""
-    result.info.append(
-        f"Page markers found: {len(pages)} markers, "
-        f"range {min(pages)}-{max(pages)}{skip_suffix}"
-    )
-
-    # Check for non-monotonic markers (pages going backward) — report ALL.
-    for i in range(1, len(pages)):
-        if pages[i] < pages[i - 1]:
-            result.errors.append(
-                f"Page markers not monotonic: page {pages[i]} "
-                f"follows page {pages[i - 1]}"
-            )
-
-    # Check for gaps (every page should have a marker).
-    for i in range(1, len(pages)):
-        gap = pages[i] - pages[i - 1]
-        if gap > 1:
-            result.errors.append(
-                f"Missing page marker(s): page {pages[i - 1]} jumps to "
-                f"page {pages[i]} (missing {gap - 1} page(s))"
-            )
-
-
-def _check_page_end_markers(markdown: str, result: ValidationResult) -> None:
-    """Verify that PDF_PAGE_END markers match PDF_PAGE_BEGIN markers."""
-    begin_pages = [int(m) for m in _PAGE_MARKER_RE.findall(markdown)]
-    end_pages = [int(m) for m in _PAGE_END_MARKER_RE.findall(markdown)]
-
-    if not end_pages:
-        if begin_pages:
-            result.errors.append(
-                "No PDF_PAGE_END markers found (PDF_PAGE_BEGIN markers present)"
-            )
-        return
-
-    result.info.append(
-        f"Page end markers found: {len(end_pages)} markers, "
-        f"range {min(end_pages)}-{max(end_pages)}"
-    )
-
-    # Every END page should have a matching BEGIN page.
-    begin_set = set(begin_pages)
-    end_set = set(end_pages)
-    unmatched_ends = end_set - begin_set
-    if unmatched_ends:
-        for p in sorted(unmatched_ends):
-            result.errors.append(
-                f"PDF_PAGE_END {p} has no matching PDF_PAGE_BEGIN"
-            )
-
-    # Every BEGIN page should have a matching END page.
-    missing_ends = begin_set - end_set
-    if missing_ends:
-        for p in sorted(missing_ends):
-            result.errors.append(
-                f"PDF_PAGE_BEGIN {p} has no matching PDF_PAGE_END"
-            )
-
-
-def _check_image_block_pairing(markdown: str, result: ValidationResult) -> None:
-    """Verify that IMAGE_BEGIN and IMAGE_END markers are properly paired.
-
-    Checks for:
-    - Unmatched IMAGE_BEGIN (opened but never closed).
-    - Unmatched IMAGE_END (closed without a preceding open).
-    - Nested IMAGE_BEGIN (opening inside an already-open block).
-    """
-    current_page: int | None = None
-    in_block = False
-    open_page: int | None = None
-    begin_count = 0
-    end_count = 0
-
-    for line in markdown.splitlines():
-        page_match = _PAGE_MARKER_RE.search(line)
-        if page_match:
-            current_page = int(page_match.group(1))
-
-        if IMAGE_BEGIN.re.search(line):
-            begin_count += 1
-            if in_block:
-                loc = f" (page {open_page})" if open_page else ""
-                result.errors.append(
-                    f"Nested IMAGE_BEGIN on page {current_page} — "
-                    f"previous block opened{loc} was not closed"
-                )
-            in_block = True
-            open_page = current_page
-
-        if IMAGE_END.re.search(line):
-            end_count += 1
-            if not in_block:
-                result.errors.append(
-                    f"IMAGE_END without matching IMAGE_BEGIN "
-                    f"on page {current_page}"
-                )
-            in_block = False
-            open_page = None
-
-    # Trailing unclosed block.
-    if in_block:
-        loc = f" on page {open_page}" if open_page else ""
-        result.errors.append(
-            f"IMAGE_BEGIN{loc} was never closed with IMAGE_END"
-        )
-
-    if begin_count or end_count:
-        result.info.append(
-            f"Image blocks: {begin_count} IMAGE_BEGIN, {end_count} IMAGE_END"
-        )
-
-
-# Section heading pattern: matches numbered (9.2.1) and lettered (A.1, B.2.1)
-# section identifiers at the start of Markdown headings.
-_SECTION_HEADING_RE = re.compile(
-    r"^#{1,6}\s+((?:[A-Z]|\d+)(?:\.(?:[A-Z]|\d+))*)\s+", re.MULTILINE
-)
-
-
-def _check_heading_sequence(markdown: str, result: ValidationResult) -> None:
-    """Warn if numbered section headings have gaps (missing sections)."""
-    matches = list(_SECTION_HEADING_RE.finditer(markdown))
-
-    if len(matches) < 2:
-        return
-
-    # Check top-level sections (e.g., 1, 2, 3, ...) for gaps.
-    # Each entry: (section_number, match_position).
-    top_level: list[tuple[int, int]] = []
-    for m in matches:
-        heading = m.group(1)
-        parts = heading.split(".")
-        if len(parts) == 1 and parts[0].isdigit():
-            top_level.append((int(parts[0]), m.start()))
-
-    if len(top_level) < 2:
-        return
-
-    pidx: _PageIndex | None = None
-    for i in range(1, len(top_level)):
-        cur_num, cur_pos = top_level[i]
-        prev_num, _prev_pos = top_level[i - 1]
-        gap = cur_num - prev_num
-        if gap > 1:
-            if pidx is None:
-                pidx = _PageIndex(markdown)
-            page_suffix = pidx.format_page(cur_pos)
-            result.warnings.append(
-                f"Section gap: section {prev_num} jumps to "
-                f"section {cur_num} (missing {gap - 1} sections)"
-                f"{page_suffix}"
-            )
-
-
-def _section_sort_key(section: str) -> tuple:
-    """Sort key for section numbers: numeric parts by value, letters after."""
-    parts = section.split(".")
-    return tuple(
-        (0, int(p)) if p.isdigit() else (1, p) for p in parts
-    )
-
-
-def _check_duplicate_headings(markdown: str, result: ValidationResult) -> None:
-    """Warn if numbered section headings appear more than once.
-
-    Wrapped standards PDFs (e.g., national-body wrappers around core content)
-    often contain front-matter sections duplicated inside the wrapper.
-    This check detects identical section numbers that appear more than
-    once in the merged output, which usually indicates overlapping content
-    between a wrapper and the embedded document.
-
-    Each duplicate is reported on its own line with the PDF page numbers
-    where it appears.
-    """
-    # Build a map: section_number -> list of page numbers.
-    current_page: int | None = None
-    occurrences: dict[str, list[int]] = {}
-
-    for line in markdown.splitlines():
-        # Track current page from PAGE_BEGIN markers.
-        page_match = _PAGE_MARKER_RE.search(line)
-        if page_match:
-            current_page = int(page_match.group(1))
-            continue
-
-        heading_match = _SECTION_HEADING_RE.match(line)
-        if heading_match:
-            section = heading_match.group(1)
-            page = current_page if current_page is not None else 0
-            occurrences.setdefault(section, []).append(page)
-
-    # Filter to duplicates only.
-    duplicates = {s: pages for s, pages in occurrences.items() if len(pages) > 1}
-    if not duplicates:
-        return
-
-    sorted_sections = sorted(duplicates.keys(), key=_section_sort_key)
-    result.warnings.append(
-        f"Duplicate section headings: {len(sorted_sections)} sections "
-        f"appear more than once"
-    )
-    for section in sorted_sections:
-        pages = duplicates[section]
-        page_str = ", ".join(f"p{p}" for p in pages)
-        result.warnings.append(
-            f"  Section {section} appears {len(pages)} times "
-            f"(pages: {page_str})"
-        )
-
-
-# Regex to extract binary values from HTML table cells.
-# Matches patterns like "0000b", "1010b", "01001111b" inside <td> content.
-_BINARY_IN_TD_RE = re.compile(
-    r"<td[^>]*>\s*([01]{4,8})b\s*</td>",
-)
-
-
-# ---------------------------------------------------------------------------
-# Table column-count consistency
-# ---------------------------------------------------------------------------
-
-# Extract all <tr>...</tr> blocks from a table.
-_TR_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
-
-# Extract <td> or <th> cells with their attributes.
-_CELL_RE = re.compile(r"<(td|th)\b([^>]*)>", re.IGNORECASE)
-
-# Extract colspan="N" or rowspan="N" from cell attributes.
-_COLSPAN_RE = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
-_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
-
-# Table title: **Table 6 – Something** — captures full title text.
-_TABLE_TITLE_RE = re.compile(
-    r"\*\*Table\s+(?:\d+|[A-Z]\.\d+)\s*[–—-]\s*([^*]+)\*\*"
-)
-
-
-def _find_table_title(markdown: str, table_start: int) -> str | None:
-    """Find the **Table N – Title** line preceding a <table> tag.
-
-    Searches backwards up to 200 characters before the table start position.
-    Returns the full bold title (e.g. "Table 6 – Application extended commands")
-    or None if not found.
-    """
-    search_start = max(0, table_start - 200)
-    preceding = markdown[search_start:table_start]
-    # Find the last **Table N – ...** in the preceding text.
-    match = None
-    for m in _TABLE_DEF_RE.finditer(preceding):
-        match = m
-    if match is None:
-        return None
-    # Return the table number portion (e.g. "Table 6").
-    return f"Table {match.group(1)}"
-
-
-def _compute_table_column_counts(table_html: str) -> list[int]:
-    """Compute effective column count for each row in an HTML table.
-
-    Uses a grid-based rowspan tracker: each column slot records how many
-    more rows it is occupied by an earlier rowspan cell.
-
-    Returns:
-        List of effective column counts, one per <tr> row.
-    """
-    rows = _TR_RE.findall(table_html)
-    if not rows:
-        return []
-
-    # rowspan_remaining[col] = number of additional rows this slot is
-    # occupied by a prior rowspan cell (0 = free).
-    rowspan_remaining: list[int] = []
-    counts: list[int] = []
-
-    for row_html in rows:
-        cells = _CELL_RE.findall(row_html)
-
-        col = 0  # current column pointer
-        # Expand rowspan tracker if needed (first row sets initial size).
-        # We'll grow it dynamically as we discover the width.
-
-        for _tag, attrs in cells:
-            # Skip past columns occupied by rowspans from previous rows.
-            while col < len(rowspan_remaining) and rowspan_remaining[col] > 0:
-                rowspan_remaining[col] -= 1
-                col += 1
-
-            colspan_m = _COLSPAN_RE.search(attrs)
-            rowspan_m = _ROWSPAN_RE.search(attrs)
-            colspan = int(colspan_m.group(1)) if colspan_m else 1
-            rowspan = int(rowspan_m.group(1)) if rowspan_m else 1
-
-            # Place this cell: it occupies 'colspan' columns starting at 'col'.
-            for c in range(col, col + colspan):
-                # Grow the tracker if we're beyond current size.
-                while c >= len(rowspan_remaining):
-                    rowspan_remaining.append(0)
-                # Mark additional rows (rowspan - 1) as occupied.
-                if rowspan > 1:
-                    rowspan_remaining[c] = rowspan - 1
-            col += colspan
-
-        # Skip past any trailing columns still occupied by rowspans.
-        while col < len(rowspan_remaining) and rowspan_remaining[col] > 0:
-            rowspan_remaining[col] -= 1
-            col += 1
-
-        counts.append(col)
-
-    return counts
-
-
-def _check_table_column_consistency(
-    markdown: str, result: ValidationResult
-) -> None:
-    """Check that every row in each HTML table has the same column count.
-
-    Parses colspan/rowspan attributes to compute the effective column count
-    per row.  Mismatches are reported as warnings with the table title
-    (if available), page number, and the row index / counts involved.
-    """
-    pidx: _PageIndex | None = None
-    for table_match in TABLE_BLOCK_RE.finditer(markdown):
-        table_html = table_match.group(0)
-        counts = _compute_table_column_counts(table_html)
-
-        if len(counts) < 2:
-            continue
-
-        # Use the maximum count as the expected column count (most rows
-        # agree on the correct width; mismatches are typically fewer).
-        expected = max(counts)
-
-        mismatches = [
-            (i, c) for i, c in enumerate(counts) if c != expected
-        ]
-        if not mismatches:
-            continue
-
-        title = _find_table_title(markdown, table_match.start())
-        label = title if title else "HTML table"
-        if pidx is None:
-            pidx = _PageIndex(markdown)
-        page_suffix = pidx.format_page(table_match.start())
-
-        for row_idx, actual in mismatches:
-            result.warnings.append(
-                f"{label}{page_suffix}: row {row_idx} has {actual} columns, "
-                f"expected {expected}"
-            )
-
-
-def _check_binary_sequences(markdown: str, result: ValidationResult) -> None:
-    """Check for duplicate or non-monotonic binary values in HTML tables.
-
-    Scans each HTML table for ``<td>`` cells containing binary values
-    (e.g., ``0101b``) and verifies that consecutive binary values within
-    the same table are monotonically increasing. Duplicates or backward
-    jumps indicate Claude misread the PDF.
-    """
-    pidx: _PageIndex | None = None
-    for table_match in TABLE_BLOCK_RE.finditer(markdown):
-        table_html = table_match.group(0)
-        bin_values = _BINARY_IN_TD_RE.findall(table_html)
-
-        if len(bin_values) < 2:
-            continue
-
-        # Resolve table context (title + page) once per table.
-        title = _find_table_title(markdown, table_match.start())
-        if pidx is None:
-            pidx = _PageIndex(markdown)
-        page_suffix = pidx.format_page(table_match.start())
-        label = title if title else "HTML table"
-
-        # Convert to integers for comparison.
-        int_values = [int(v.replace(" ", ""), 2) for v in bin_values]
-
-        for i in range(1, len(int_values)):
-            if int_values[i] == int_values[i - 1]:
-                result.warnings.append(
-                    f"Duplicate binary value in {label}{page_suffix}: "
-                    f"{bin_values[i]}b appears twice consecutively"
-                )
-            elif int_values[i] < int_values[i - 1]:
-                result.warnings.append(
-                    f"Binary sequence not monotonic in {label}{page_suffix}: "
-                    f"{bin_values[i]}b follows {bin_values[i - 1]}b"
-                )

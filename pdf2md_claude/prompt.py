@@ -58,6 +58,12 @@ image-only pages, or skipped content (e.g., Table of Contents).
    - For skipped pages, place `{PAGE_SKIP.marker}` between the markers (see the **Skip** rule).
    - N is the original document page number — the correct page range \
 will be specified in the conversion instructions.
+   - **Physical page anchoring** (CRITICAL): Page numbers are determined \
+by physical position in the PDF, NOT by content type. The 1st physical \
+page of the excerpt = 1st page number, the 2nd = 2nd page number, etc. \
+Do NOT renumber or reorder pages. If a physical page's content is \
+skipped, that page number still gets a `{PAGE_SKIP.marker}` marker — subsequent \
+pages keep their original numbers.
    - Example structure:
    ```
    {PAGE_BEGIN.format(5)}
@@ -76,11 +82,21 @@ _RULE_SKIP = f"""\
 **Skip**: Page headers, page footers, page numbers, and watermarks.
    - **CRITICAL**: When you skip entire page's content, you MUST still emit \
 the page markers for that page. Place `{PAGE_SKIP.marker}` between the begin/end \
-markers to signal the skip is intentional:
+markers to signal the skip is intentional. Multiple consecutive pages \
+can each be skipped this way — every page keeps its own number:
    ```
    {PAGE_BEGIN.format(9)}
    {PAGE_SKIP.marker}
    {PAGE_END.format(9)}
+   {PAGE_BEGIN.format(10)}
+   {PAGE_SKIP.marker}
+   {PAGE_END.format(10)}
+   {PAGE_BEGIN.format(11)}
+   {PAGE_SKIP.marker}
+   {PAGE_END.format(11)}
+   {PAGE_BEGIN.format(12)}
+   ...page 12 content (first non-skipped page)...
+   {PAGE_END.format(12)}
    ```
    This preserves correct page numbering. NEVER silently omit page \
 markers — every page in the range must have a begin/end pair."""
@@ -135,10 +151,30 @@ at the same time (e.g. `<th rowspan="2" colspan="3">`).
       - The total column count MUST be identical for every row. A cell with \
 `colspan="3"` counts as 3; a cell with `rowspan="N"` in row R occupies \
 that column in rows R through R+N-1.
-      - **Self-check**: compute the total column count from the full table \
-(any row may use colspan/rowspan). Verify that EVERY row — header, data, \
-and separator — resolves to the same total. Fix mismatches before \
-outputting.
+   - **rowspan boundary rule** (CRITICAL): A `rowspan` value must NEVER \
+exceed the number of remaining rows within its section (`<thead>` or \
+`<tbody>`). If `<thead>` has 2 `<tr>` rows, the maximum rowspan for a \
+cell in row 1 is 2, not 3. Rowspan must NOT bleed from `<thead>` into \
+`<tbody>` or vice versa. Before writing any `rowspan`, count the actual \
+rows in the section and cap accordingly.
+   - **Multi-level headers and colspan** (CRITICAL): When a header cell \
+visually groups multiple sub-columns beneath it, it MUST have `colspan` \
+equal to the number of sub-columns. Common mistake: using only `rowspan` \
+when the cell also spans multiple columns — the correct markup needs \
+`colspan` too (e.g. `<th rowspan="2" colspan="3">`). Count the \
+sub-header `<th>` cells in the next row and verify they fill the \
+colspan exactly.
+   - **Self-check procedure** (CRITICAL — perform this for EVERY table):
+      1. Determine the table's column count W from the first header row \
+(sum of explicit cells, each weighted by its colspan).
+      2. For each subsequent row, compute: (number of explicit cells, each \
+weighted by colspan) + (cells inherited from rowspan of earlier rows) = \
+must equal W.
+      3. If ANY row ≠ W, find and fix the mismatch BEFORE outputting. \
+Common fixes: add missing `colspan`, reduce over-sized `rowspan`, add \
+or remove a `<td>`/`<th>`.
+      4. Double-check that rowspan values do not cross the `<thead>`/\
+`<tbody>` boundary.
    - **Completeness** (CRITICAL): You MUST convert EVERY table completely, \
 no matter how large or complex. NEVER replace a table with a summary, \
 description, or "see below" reference. If a table has 100 rows, output all \
@@ -298,12 +334,25 @@ Convert these PDF pages to Markdown following the system instructions.
 
 IMPORTANT: These PDF pages correspond to pages {{page_start}} through \
 {{page_end}} of the original document ({{page_count}} pages). Wrap each \
-page's content with `{PAGE_BEGIN.example}` and `{PAGE_END.example}` markers using the original page \
-numbers: the first page of this chunk is page {{page_start}}, the next is \
-page {{page_start_plus_1}}, and so on sequentially. You MUST emit exactly \
-{{page_count}} begin/end marker pairs, one pair for each page from \
-{{page_start}} to {{page_end}}.
+page's content with `{PAGE_BEGIN.example}` and `{PAGE_END.example}` markers. You MUST \
+emit exactly {{page_count}} begin/end marker pairs, one pair for each \
+page from {{page_start}} to {{page_end}}.
 
 {{previous_context_block}}
+
+BEFORE YOU START — page assignment procedure (CRITICAL):
+1. This PDF excerpt has exactly {{page_count}} physical pages.
+2. Assign page numbers strictly by position: the 1st page you see = \
+page {{page_start}}, the 2nd = page {{page_start_plus_1}}, the 3rd = \
+page {{page_start_plus_2}}, and so on through page {{page_end}}.
+3. Go through each physical page in order. For each page, either \
+convert its content or emit `{PAGE_SKIP.marker}` — but always under \
+that page's assigned number.
+**COMMON ERROR**: When the first pages of a chunk are Table of Contents \
+or boilerplate, you may be tempted to skip them and assign page \
+{{page_start}} to the first "real content" page. This is WRONG. Those \
+TOC/boilerplate pages ARE pages {{page_start}}, {{page_start_plus_1}}, \
+etc. — emit `{PAGE_SKIP.marker}` for each one. The first content page \
+gets the NEXT number in sequence.
 
 Output ONLY the markdown content."""

@@ -7,7 +7,7 @@ Usage::
     pdf2md-claude convert document.pdf
     pdf2md-claude convert *.pdf -o output/
     pdf2md-claude remerge document.pdf
-    pdf2md-claude validate output/*.md
+    pdf2md-claude validate document.pdf
     pdf2md-claude show-prompt
     pdf2md-claude init-rules
 """
@@ -234,7 +234,7 @@ def _build_parser() -> argparse.ArgumentParser:
 Commands:
   convert       Convert PDF documents to Markdown (requires ANTHROPIC_API_KEY)
   remerge       Re-merge from cached chunks (no API calls needed)
-  validate      Validate existing .md files (no API key needed)
+  validate      Validate converted output (no API key needed)
   show-prompt   Print the system prompt to stdout
   init-rules    Generate a rules template file
 
@@ -243,7 +243,7 @@ Examples:
   %(prog)s convert *.pdf -o output/          Convert all PDFs to output dir
   %(prog)s convert doc.pdf -f --cache        Force reconvert with caching
   %(prog)s remerge document.pdf              Re-merge from cached chunks
-  %(prog)s validate output/*.md              Validate existing .md files
+  %(prog)s validate document.pdf              Validate converted output
   %(prog)s show-prompt                       Show default system prompt
   %(prog)s init-rules                        Generate .pdf2md.rules template
 
@@ -369,23 +369,26 @@ Examples:
     # -- validate --------------------------------------------------------------
     p_validate = subparsers.add_parser(
         "validate",
-        parents=[verbose_parent],
+        parents=[verbose_parent, output_parent],
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        help="Validate existing .md files (no API key needed)",
-        description="Run structural validation checks on existing Markdown "
-                    "files. If a matching .pdf is found nearby, also runs "
-                    "PDF fidelity checks.",
+        help="Validate converted output (no API key needed)",
+        description="Run structural validation checks on converted Markdown "
+                    "output, including per-page fidelity checks against the "
+                    "source PDF. Accepts PDF paths and derives .md paths "
+                    "using the same convention as 'convert'.",
         epilog="""
 Examples:
-  %(prog)s output/*.md                      Validate all .md files
-  %(prog)s -v samples/*.md                  Validate with verbose output
+  %(prog)s document.pdf                     Validate single PDF's output
+  %(prog)s *.pdf                            Validate all PDFs in current dir
+  %(prog)s *.pdf -o output/                 Validate with custom output dir
+  %(prog)s -v document.pdf                  Validate with verbose output
         """,
     )
     p_validate.add_argument(
-        "files",
+        "pdfs",
         nargs="+",
         type=Path,
-        help="Markdown file(s) to validate",
+        help="PDF file(s) whose converted .md output will be validated",
     )
 
     # -- show-prompt -----------------------------------------------------------
@@ -440,8 +443,15 @@ Examples:
 def _resolve_file_paths(
     raw_paths: list[Path],
     kind: str,
+    expected_suffix: str | None = None,
 ) -> list[Path] | None:
     """Resolve and validate a list of file paths.
+
+    Args:
+        raw_paths: Paths from argparse.
+        kind: Human-readable label for error messages (e.g. ``"PDF"``).
+        expected_suffix: If set, reject files with a different suffix
+            (e.g. ``".pdf"``).  The check is case-insensitive.
 
     Returns resolved paths on success, or ``None`` on first error
     (after logging the error).
@@ -454,6 +464,15 @@ def _resolve_file_paths(
             return None
         if not rp.is_file():
             _log.error("Not a file: %s", p)
+            return None
+        if (
+            expected_suffix
+            and rp.suffix.lower() != expected_suffix.lower()
+        ):
+            _log.error(
+                "Expected a %s file, got %s: %s",
+                expected_suffix, rp.suffix or "(no extension)", p,
+            )
             return None
         resolved.append(rp)
     return resolved
@@ -516,48 +535,54 @@ def _resolve_rules(
     return rules_cache[resolved]
 
 
-def _discover_pdf(md_path: Path) -> Path | None:
-    """Find a matching source PDF for a markdown file.
 
-    Checks for ``<stem>.pdf`` in the same directory as the ``.md`` file.
-    Returns the PDF path if found, ``None`` otherwise.
-    """
-    candidate = md_path.with_suffix(".pdf")
-    return candidate if candidate.is_file() else None
+def _validate_files(
+    pdf_paths: list[Path],
+    output_dir: Path | None,
+) -> int:
+    """Run standalone validation on converted output.
 
+    For each PDF, derives the ``.md`` output path (same convention as
+    ``convert``), reads the markdown, runs structural validation, and
+    cross-checks page content against the source PDF.
 
-def _validate_files(md_paths: list[Path], verbose: bool) -> int:
-    """Run standalone validation on existing ``.md`` files.
-
-    For each file, reads the markdown content, runs structural
-    validation checks, and optionally runs PDF fidelity checks if
-    a matching ``.pdf`` is found alongside the ``.md`` file.
+    Both the PDF and its derived ``.md`` must exist; missing files are
+    logged as errors and counted as failures.
 
     Args:
-        md_paths: Resolved paths to ``.md`` files.
-        verbose: Whether verbose logging is enabled.
+        pdf_paths: Resolved paths to source PDF files.
+        output_dir: Optional output directory (mirrors ``-o`` in convert).
 
     Returns:
         Exit code: 0 if all files pass (warnings OK), 1 if any has errors.
     """
     total_errors = 0
     total_warnings = 0
-    has_errors = False
+    validated = 0
+    failed = 0
 
-    for md_path in md_paths:
-        doc_name = md_path.name
+    for pdf_path in pdf_paths:
+        doc_name = pdf_path.stem
+        md_path = resolve_output(pdf_path, output_dir)
+
+        if not pdf_path.is_file():
+            _log.error("%s: PDF not found: %s", doc_name, pdf_path)
+            failed += 1
+            continue
+
+        if not md_path.is_file():
+            _log.error(
+                "%s: Markdown not found: %s — run 'convert' first",
+                doc_name, md_path,
+            )
+            failed += 1
+            continue
+
         _log.info("%s:", doc_name)
 
         markdown = md_path.read_text(encoding="utf-8")
         result: ValidationResult = validate_output(markdown)
-
-        # Optional PDF fidelity check.
-        pdf_path = _discover_pdf(md_path)
-        if pdf_path is not None:
-            _log.debug("  Found source PDF: %s", pdf_path)
-            check_page_fidelity(pdf_path, markdown, result)
-        else:
-            _log.debug("  No matching PDF found for fidelity check")
+        check_page_fidelity(pdf_path, markdown, result)
 
         result.log_all()
 
@@ -566,7 +591,6 @@ def _validate_files(md_paths: list[Path], verbose: bool) -> int:
                 "  ⚠ %d error(s), %d warning(s)",
                 len(result.errors), len(result.warnings),
             )
-            has_errors = True
         elif result.warnings:
             _log.warning(
                 "  ⚠ %d warning(s)", len(result.warnings),
@@ -576,16 +600,22 @@ def _validate_files(md_paths: list[Path], verbose: bool) -> int:
 
         total_errors += len(result.errors)
         total_warnings += len(result.warnings)
+        validated += 1
 
     _log.info("")
     _log.info(_SUMMARY_SEP)
+    parts = [f"{validated} validated"]
+    if failed:
+        parts.append(f"{failed} failed")
+    parts.append(f"{total_errors} error(s)")
+    parts.append(f"{total_warnings} warning(s)")
     _log.info(
-        "Validated %d file(s): %d error(s), %d warning(s)",
-        len(md_paths), total_errors, total_warnings,
+        "Validate %d PDF(s): %s",
+        len(pdf_paths), ", ".join(parts),
     )
     _log.info(_SUMMARY_SEP)
 
-    return 1 if has_errors else 0
+    return 1 if (total_errors > 0 or failed > 0) else 0
 
 
 def _convert_single_pdf(
@@ -762,20 +792,24 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     """Handle the ``validate`` command."""
     _setup_logging(args.verbose)
 
-    md_paths = _resolve_file_paths(args.files, "File")
-    if md_paths is None:
+    pdf_paths = _resolve_file_paths(args.pdfs, "PDF", expected_suffix=".pdf")
+    if pdf_paths is None:
         return 1
 
+    output_dir = args.output_dir.resolve() if args.output_dir else None
+
     _log.info("pdf2md-claude %s", __version__)
-    _log.info("Mode: validate (%d file(s))", len(md_paths))
-    return _validate_files(md_paths, verbose=args.verbose)
+    _log.info("Mode: validate (%d PDF(s))", len(pdf_paths))
+    if output_dir:
+        _log.info("Output directory: %s", output_dir)
+    return _validate_files(pdf_paths, output_dir)
 
 
 def _cmd_remerge(args: argparse.Namespace) -> int:
     """Handle the ``remerge`` command."""
     _setup_logging(args.verbose)
 
-    pdf_paths = _resolve_file_paths(args.pdfs, "PDF")
+    pdf_paths = _resolve_file_paths(args.pdfs, "PDF", expected_suffix=".pdf")
     if pdf_paths is None:
         return 1
 
@@ -840,7 +874,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 
     _setup_logging(args.verbose)
 
-    pdf_paths = _resolve_file_paths(args.pdfs, "PDF")
+    pdf_paths = _resolve_file_paths(args.pdfs, "PDF", expected_suffix=".pdf")
     if pdf_paths is None:
         return 1
 
