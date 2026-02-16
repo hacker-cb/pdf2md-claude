@@ -320,6 +320,37 @@ def build_system_prompt(
 
 SYSTEM_PROMPT = build_system_prompt([text for _, text in _DEFAULT_REGISTRY])
 
+# ---------------------------------------------------------------------------
+# Table correction prompt (AI-based repair)
+# ---------------------------------------------------------------------------
+
+TABLE_FIX_SYSTEM_PROMPT = f"""\
+You are regenerating a complex HTML table from a PDF. This table has merged cells \
+(colspan/rowspan attributes) that require careful attention to structure. Your task \
+is to generate a fresh, accurate table by reading directly from the PDF with extended \
+thinking to analyze the structure.
+
+**Input you'll receive:**
+1. Source PDF pages containing the table
+2. The previously extracted HTML (complex structure — use only as reference)
+3. Surrounding markdown context (to identify which table to regenerate)
+
+**Your task:** Read the table from the PDF and generate complete, correct HTML. \
+Pay special attention to merged cells and ensure all colspan/rowspan attributes are \
+accurate. Follow ALL the table conversion rules below.
+
+{_RULE_TABLES}
+
+**Page marker preservation (CRITICAL):** If the provided HTML contains \
+page boundary markers like `<!-- {PAGE_BEGIN.tag} N -->`, `<!-- {PAGE_END.tag} N -->`, \
+or `<!-- {PAGE_SKIP.tag} -->`, you MUST include them in your output at the correct \
+positions (where page breaks occur in the table). These markers are NOT table content \
+but track page boundaries in multi-page tables.
+
+**Output format:** Return ONLY the complete `<table>...</table>` block. No \
+explanation, no markdown fences, no additional text.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Context notes (per-chunk position)

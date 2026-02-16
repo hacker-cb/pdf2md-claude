@@ -13,6 +13,7 @@ append validation messages.
 Built-in steps (always in this order, some conditionally included):
 
 - :class:`MergeContinuedTablesStep` — merges split tables.
+- :class:`FixTablesStep` — regenerates complex tables (colspan/rowspan) from PDF via AI.
 - :class:`ExtractImagesStep` — renders and injects images.
 - :class:`StripAIDescriptionsStep` — removes AI-generated image descriptions.
 - :class:`FormatMarkdownStep` — prettifies HTML tables and normalizes spacing.
@@ -20,7 +21,8 @@ Built-in steps (always in this order, some conditionally included):
 
 The :meth:`ConversionPipeline.run` method provides a unified entry point
 that supports full API-based conversion (``from_step=None``) or re-running
-from cached chunks (``from_step="merge"``), with no API calls.
+from cached chunks (``from_step="merge"``, no chunk conversion API calls,
+but post-processing steps like table fixing may still call the API).
 """
 
 from __future__ import annotations
@@ -40,9 +42,10 @@ from pdf2md_claude.formatter import FormatMarkdownStep
 from pdf2md_claude.images import ImageExtractor, ImageMode
 from pdf2md_claude.markers import IMAGE_AI_DESCRIPTION_BLOCK_RE
 from pdf2md_claude.merger import merge_chunks, merge_continued_tables
-from pdf2md_claude.models import DocumentUsageStats, ModelConfig
+from pdf2md_claude.models import DocumentUsageStats, ModelConfig, StageCost
+from pdf2md_claude.table_fixer import FixTablesStep
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
-from pdf2md_claude.workdir import WorkDir
+from pdf2md_claude.workdir import TableFixStats, WorkDir
 
 _log = logging.getLogger("pipeline")
 
@@ -92,6 +95,15 @@ class ProcessingContext:
     output_file: Path
     """Target path for the output Markdown file."""
 
+    api: ClaudeApi | None = None
+    """Claude API client for AI-based steps (``None`` in test contexts)."""
+
+    work_dir: WorkDir | None = None
+    """Work directory for step-level persistence (``None`` in test contexts)."""
+
+    table_fix_stats: TableFixStats | None = None
+    """Aggregate stats from FixTablesStep (populated during run)."""
+
     validation: ValidationResult = field(default_factory=ValidationResult)
     """Accumulated validation errors, warnings, and info messages."""
 
@@ -108,6 +120,8 @@ class ProcessingStep(Protocol):
     - Modify ``ctx.markdown`` (content transforms).
     - Append to ``ctx.validation`` (quality checks).
     - Perform side effects (e.g. write image files to disk).
+    - Access ``ctx.api`` and ``ctx.work_dir`` (for API-calling steps).
+    - Set ``ctx.table_fix_stats`` (for aggregating stage costs).
     """
 
     @property
@@ -280,9 +294,10 @@ class ConversionPipeline:
     Processing steps are built internally from configuration flags.
     Provides :meth:`run` as a unified entry point supporting full API-based
     conversion (``from_step=None``) or re-running from cached chunks
-    (``from_step="merge"``, no API calls).
+    (``from_step="merge"``, no chunk conversion API calls, but post-processing
+    steps may still call the API).
 
-    The step chain is always: tables → images → strip-ai → format → validate,
+    The step chain is always: tables → fix-tables → images → strip-ai → format → validate,
     with some steps conditionally included based on flags.
 
     Usage::
@@ -313,6 +328,7 @@ class ConversionPipeline:
         no_images: bool = False,
         strip_ai_descriptions: bool = False,
         no_format: bool = False,
+        no_fix_tables: bool = False,
     ) -> None:
         self._pdf_path = pdf_path
         self._output_file = output_file
@@ -325,6 +341,7 @@ class ConversionPipeline:
         self._no_images = no_images
         self._strip_ai_descriptions = strip_ai_descriptions
         self._no_format = no_format
+        self._no_fix_tables = no_fix_tables
         
         # Build step chain
         self._steps = self._build_steps()
@@ -353,6 +370,8 @@ class ConversionPipeline:
             Ordered list of processing steps to execute after merge.
         """
         steps: list[ProcessingStep] = [MergeContinuedTablesStep()]
+        if not self._no_fix_tables:
+            steps.append(FixTablesStep())
         if not self._no_images:
             steps.append(ExtractImagesStep(
                 image_mode=self._image_mode,
@@ -407,12 +426,12 @@ class ConversionPipeline:
         """Load previously saved usage stats from the work directory.
 
         Returns:
-            ``DocumentUsageStats`` if ``stats.json`` exists and is valid,
-            ``None`` otherwise.
+            ``DocumentUsageStats`` with stages included if ``stats.json`` exists
+            and is valid, ``None`` otherwise.
         """
         if not self._work_dir.path.exists():
             return None
-        return self._work_dir.load_stats()
+        return self._work_dir.load_combined_stats()
 
     def needs_conversion(
         self,
@@ -467,13 +486,17 @@ class ConversionPipeline:
         3. Run all processing steps (transforms, validation).
         4. Write output file.
 
+        Note: ``from_step="merge"`` skips chunk conversion API calls, but post-processing
+        steps may still make API calls (e.g., table fixing with ``FixTablesStep`` if not
+        disabled via ``--no-fix-tables``).
+
         Args:
             pages_per_chunk: Pages per conversion chunk.
             max_pages: Optional page cap for debugging.
             force: If True, discard cached chunks and reconvert (ignored when
                 ``from_step`` is set).
             from_step: Start from this step. ``None`` = full conversion,
-                ``"merge"`` = load chunks from disk (no API calls).
+                ``"merge"`` = load chunks from disk (no chunk conversion API calls).
 
         Returns:
             :class:`PipelineResult` with stats, validation, and output path.
@@ -505,6 +528,24 @@ class ConversionPipeline:
 
         # Common tail: merge, run steps, write, and return result.
         ctx, step_timings = self._process(parts)
+
+        # Append/replace table-fix stage to stats (keep breakdown separate).
+        # If FixTablesStep ran (ctx.table_fix_stats set), always clear the old
+        # persisted stage and only re-add if tables were actually fixed.
+        # If it didn't run, keep any persisted entry from disk.
+        if ctx.table_fix_stats is not None:
+            # Remove any existing table-fix stage (for merge+rerun case).
+            stats.stages = [s for s in stats.stages if s.name != "table fixes"]
+            # Only append fresh stage if tables were successfully fixed.
+            if ctx.table_fix_stats.tables_fixed > 0:
+                stats.stages.append(StageCost(
+                    name="table fixes",
+                    input_tokens=ctx.table_fix_stats.total_input_tokens,
+                    output_tokens=ctx.table_fix_stats.total_output_tokens,
+                    cost=ctx.table_fix_stats.total_cost,
+                    elapsed_seconds=ctx.table_fix_stats.total_elapsed_seconds,
+                    detail=f"{ctx.table_fix_stats.tables_fixed} tables",
+                ))
 
         return PipelineResult(
             stats=stats,
@@ -585,7 +626,8 @@ class ConversionPipeline:
 
         parts = [self._work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
 
-        stats = self._work_dir.load_stats()
+        # Load stats with persisted table-fix stages (if any).
+        stats = self._work_dir.load_combined_stats()
         if stats is None:
             # Minimal stats when stats.json is missing.
             stats = DocumentUsageStats(
@@ -619,6 +661,8 @@ class ConversionPipeline:
             markdown=markdown,
             pdf_path=self._pdf_path,
             output_file=self._output_file,
+            api=self._api,
+            work_dir=self._work_dir,
         )
         step_timings = self._run_steps(ctx)
         self._write(ctx)

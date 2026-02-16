@@ -117,6 +117,30 @@ class TestConvertArgs:
         """Invalid --from value is rejected."""
         _parse_fails(["convert", "doc.pdf", "--from", "invalid"])
 
+    def test_from_merge_help_text_accurate(self, capsys):
+        """--from help text should mention that post-processing may call API."""
+        from pdf2md_claude.cli import _build_parser
+        
+        parser = _build_parser()
+        # Get help text for convert command
+        try:
+            parser.parse_args(["convert", "--help"])
+        except SystemExit:
+            pass  # --help causes sys.exit
+        
+        captured = capsys.readouterr()
+        help_text = captured.out
+        help_text_lower = help_text.lower()
+        
+        # Verify help text mentions chunk conversion vs post-processing distinction
+        assert "--from" in help_text
+        assert "merge" in help_text
+        # Should explicitly mention BOTH that chunk conversion is skipped AND post-processing may call API
+        assert "chunk conversion" in help_text_lower, "Help text should mention 'chunk conversion'"
+        assert "post-processing" in help_text_lower, "Help text should mention 'post-processing'"
+        # Should mention table fixing as an example of post-processing that calls API
+        assert "table" in help_text_lower, "Help text should mention table fixing as example"
+
 
 # ---------------------------------------------------------------------------
 # validate subcommand

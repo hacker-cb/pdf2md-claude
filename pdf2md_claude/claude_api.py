@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import anthropic
@@ -105,6 +106,11 @@ class ClaudeApi:
         self._use_cache = use_cache
         self._max_retries = max_retries
 
+    @property
+    def model(self) -> ModelConfig:
+        """The model configuration used by this API client."""
+        return self._model
+
     def cached_block(self, block: dict) -> dict:
         """Add cache_control to a content block if caching is enabled.
 
@@ -129,6 +135,8 @@ class ClaudeApi:
         system: str,
         messages: list[dict],
         retry_context: str = "",
+        thinking: dict | None = None,
+        on_thinking_delta: Callable[[str], None] | None = None,
     ) -> ApiResponse:
         """Send a message to Claude with automatic retry and streaming.
 
@@ -142,6 +150,10 @@ class ClaudeApi:
                 if caching is enabled).
             messages: List of message dicts (Anthropic messages API format).
             retry_context: Optional label for log messages (e.g. "pages 1-10").
+            thinking: Optional thinking config dict (e.g. ``{"type": "adaptive"}``
+                for Opus 4.6 or ``{"type": "enabled", "budget_tokens": 10000}``).
+            on_thinking_delta: Optional callback invoked with each thinking chunk
+                as it streams (only called when thinking is enabled).
 
         Returns:
             ApiResponse with markdown text, token counts, and stop reason.
@@ -155,7 +167,7 @@ class ClaudeApi:
 
         for attempt in range(1, self._max_retries + 1):
             try:
-                resp = self._stream_message(system, messages)
+                resp = self._stream_message(system, messages, thinking, on_thinking_delta)
                 elapsed = time.time() - start
                 _log.debug(
                     "API call%s: %.1fs, stop=%s",
@@ -186,6 +198,8 @@ class ClaudeApi:
         self,
         system: str,
         messages: list[dict],
+        thinking: dict | None = None,
+        on_thinking_delta: Callable[[str], None] | None = None,
     ) -> ApiResponse:
         """Send a message to Claude and stream the response.
 
@@ -196,6 +210,9 @@ class ClaudeApi:
         Args:
             system: System prompt text.
             messages: List of message dicts (Anthropic messages API format).
+            thinking: Optional thinking config dict.
+            on_thinking_delta: Optional callback invoked with each thinking chunk
+                as it streams (only called when thinking is enabled).
 
         Returns:
             ApiResponse with markdown text, token counts, and stop reason.
@@ -205,12 +222,24 @@ class ClaudeApi:
         if self._use_cache:
             system_block["cache_control"] = _CACHE_CONTROL
 
-        with self._client.messages.stream(
-            model=self._model.model_id,
-            max_tokens=self._model.max_output_tokens,
-            system=[system_block],
-            messages=messages,
-        ) as stream:
+        # Build API call kwargs.
+        kwargs: dict = {
+            "model": self._model.model_id,
+            "max_tokens": self._model.max_output_tokens,
+            "system": [system_block],
+            "messages": messages,
+        }
+        if thinking is not None:
+            kwargs["thinking"] = thinking
+
+        with self._client.messages.stream(**kwargs) as stream:
+            # Stream events to capture thinking deltas if callback provided.
+            if on_thinking_delta is not None and thinking is not None:
+                for event in stream:
+                    if event.type == "content_block_delta":
+                        if hasattr(event.delta, "type") and event.delta.type == "thinking_delta":
+                            on_thinking_delta(event.delta.thinking)
+            
             message = stream.get_final_message()
 
         # Extract text content from response blocks.

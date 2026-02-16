@@ -180,15 +180,15 @@ def _build_parser() -> argparse.ArgumentParser:
              "'-j N' = exactly N workers (default: 1, sequential).",
     )
 
-    image_parent = argparse.ArgumentParser(add_help=False)
-    image_parent.add_argument(
+    processing_parent = argparse.ArgumentParser(add_help=False)
+    processing_parent.add_argument(
         "--no-images",
         action="store_true",
         help="Skip image extraction. By default, IMAGE_RECT bounding boxes "
              "emitted by Claude are rendered from the PDF and injected as "
              "image files alongside the Markdown output.",
     )
-    image_parent.add_argument(
+    processing_parent.add_argument(
         "--image-mode",
         choices=[m.value for m in ImageMode],
         default=ImageMode.AUTO.value,
@@ -198,7 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
              "bounding box directly; 'debug' renders all variants "
              "side-by-side in an HTML table (default: %(default)s).",
     )
-    image_parent.add_argument(
+    processing_parent.add_argument(
         "--image-dpi",
         type=int,
         default=DEFAULT_IMAGE_DPI,
@@ -206,19 +206,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="DPI for page-region rendering — vector diagrams, composites, "
              f"and snap/bbox modes (default: {DEFAULT_IMAGE_DPI}).",
     )
-    image_parent.add_argument(
+    processing_parent.add_argument(
         "--strip-ai-descriptions",
         action="store_true",
         help="Remove AI-generated image description blocks from the output. "
              "These are textual descriptions Claude generates for images, "
              "wrapped in IMAGE_AI_GENERATED_DESCRIPTION markers.",
     )
-    image_parent.add_argument(
+    processing_parent.add_argument(
         "--no-format",
         action="store_true",
         help="Skip markdown formatting. By default, HTML tables are "
              "prettified with consistent indentation and markdown spacing "
              "is normalized (blank lines, trailing whitespace).",
+    )
+    processing_parent.add_argument(
+        "--no-fix-tables",
+        action="store_true",
+        help="Skip AI-based table regeneration. By default, complex tables "
+             "with colspan/rowspan are regenerated from the source PDF "
+             "using extended thinking (costs additional API tokens).",
     )
 
     # -- Main parser -----------------------------------------------------------
@@ -257,7 +264,7 @@ Run '%(prog)s COMMAND --help' for command-specific options.
     # -- convert ---------------------------------------------------------------
     p_convert = subparsers.add_parser(
         "convert",
-        parents=[verbose_parent, output_parent, jobs_parent, image_parent],
+        parents=[verbose_parent, output_parent, jobs_parent, processing_parent],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         help="Convert PDF documents to Markdown",
         description="Convert PDF documents to Markdown using Claude's "
@@ -345,8 +352,9 @@ Examples:
         metavar="STEP",
         help="Skip earlier pipeline stages and start from STEP. "
              "'merge' re-runs merge + post-processing from cached "
-             "chunks (no API calls). Requires a prior conversion "
-             "with a populated .staging/ directory.",
+             "chunks (skips chunk conversion API calls; post-processing "
+             "steps like table fixing may still call API unless disabled). "
+             "Requires a prior conversion with a populated .staging/ directory.",
     )
 
     # -- validate --------------------------------------------------------------
@@ -633,6 +641,7 @@ def _convert_one_document(
     no_images: bool,
     strip_ai_descriptions: bool,
     no_format: bool,
+    no_fix_tables: bool,
     from_step: str | None = None,
 ) -> _DocConvertResult:
     """Convert a single PDF: check staleness, run pipeline.
@@ -658,13 +667,14 @@ def _convert_one_document(
             no_images=no_images,
             strip_ai_descriptions=strip_ai_descriptions,
             no_format=no_format,
+            no_fix_tables=no_fix_tables,
         )
 
         if not pipeline.needs_conversion(force=force or bool(from_step)):
             cached_stats = pipeline.load_cached_stats()
             if cached_stats is not None:
                 _log.info(
-                    "⊙ %s (cached, $%.2f)", doc_name, cached_stats.cost,
+                    "⊙ %s (cached, $%.2f)", doc_name, cached_stats.total_cost,
                 )
             else:
                 _log.info("⊙ %s (cached)", doc_name)
@@ -813,7 +823,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
             pages_per_chunk, model.max_pdf_pages,
         )
         if args.from_step:
-            _log.info("Starting from: %s (no API calls for earlier steps)", args.from_step)
+            _log.info("Starting from: %s (skips chunk conversion; post-processing may still call API)", args.from_step)
         if args.cache:
             _log.info("Prompt caching: ENABLED (1h TTL)")
 
@@ -881,6 +891,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                         no_images=args.no_images,
                         strip_ai_descriptions=args.strip_ai_descriptions,
                         no_format=args.no_format,
+                        no_fix_tables=args.no_fix_tables,
                         from_step=args.from_step,
                     ): pdf_path
                     for pdf_path in pdf_paths
@@ -914,6 +925,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                     no_images=args.no_images,
                     strip_ai_descriptions=args.strip_ai_descriptions,
                     no_format=args.no_format,
+                    no_fix_tables=args.no_fix_tables,
                     from_step=args.from_step,
                 )
                 if result.stats is not None:

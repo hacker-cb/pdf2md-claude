@@ -70,8 +70,9 @@ Chunked conversion with context passing, deterministic merging, and validation:
 2. Convert each chunk with context from the previous chunk's tail
 3. Merge chunks by page markers (deterministic, no LLM)
 4. Merge continued tables across page boundaries (deterministic, no LLM)
-5. Extract and inject images from bounding-box markers (deterministic, no LLM)
-6. Validate output (page markers, tables, heading gaps, binary sequences, fabrication detection)
+5. Regenerate complex tables with colspan/rowspan from PDF using AI (extended thinking)
+6. Extract and inject images from bounding-box markers (deterministic, no LLM)
+7. Validate output (page markers, tables, heading gaps, binary sequences, fabrication detection)
 
 ## CLI Commands
 
@@ -101,7 +102,10 @@ pdf2md-claude init-rules [PATH]             Generate a rules template
   --image-mode MODE      Image extraction mode (auto/snap/bbox/debug)
   --image-dpi DPI        DPI for page-region rendering (default: 600)
   --strip-ai-descriptions  Remove AI-generated image descriptions
-  --from STEP            Skip earlier stages and start from STEP (merge = re-merge from cached chunks)
+  --no-fix-tables        Skip AI-based table regeneration (default: enabled, costs extra tokens)
+  --no-format            Skip markdown formatting (default: format enabled)
+  --from STEP            Skip earlier stages and start from STEP (merge = re-merge from cached chunks;
+                         post-processing steps like table fixing may still call API)
 ```
 
 Run without arguments to display help.
@@ -175,9 +179,10 @@ pdf2md-claude/
 ├── pdf2md_claude/              # Main package
 │   ├── __init__.py             # Package version export
 │   ├── __main__.py             # python -m pdf2md_claude entry point
+│   ├── claude_api.py           # Claude API client wrapper with retry and streaming
 │   ├── cli.py                  # CLI argument parsing and orchestration
-│   ├── client.py               # Anthropic API client setup
 │   ├── converter.py            # Core PDF→Markdown conversion logic
+│   ├── formatter.py            # Markdown and HTML table formatter
 │   ├── images.py               # Image extraction, rendering, and injection (pymupdf)
 │   ├── markers.py              # Centralized marker definitions (MarkerDef)
 │   ├── merger.py               # Deterministic page-marker merge + table continuation merging
@@ -185,17 +190,22 @@ pdf2md-claude/
 │   ├── pipeline.py             # Single-document orchestration (convert → merge → validate → write)
 │   ├── prompt.py               # Prompts for Claude PDF conversion
 │   ├── rules.py                # Custom rules file parsing and prompt customization
+│   ├── table_fixer.py          # AI-based table regeneration (FixTablesStep)
 │   ├── validator.py            # Content validation (page markers, tables, fabrication, etc.)
 │   └── workdir.py              # Chunk persistence, resume, and work directory management
 ├── tests/                      # Unit tests
 │   ├── __init__.py
 │   ├── conftest.py             # Shared test fixtures
+│   ├── test_claude_api.py
 │   ├── test_cli.py
 │   ├── test_converter.py
+│   ├── test_formatter.py
 │   ├── test_images.py
 │   ├── test_markers.py
+│   ├── test_models.py
 │   ├── test_pipeline.py
 │   ├── test_rules.py
+│   ├── test_table_fixer.py
 │   ├── test_table_merger.py
 │   ├── test_validator.py
 │   └── test_workdir.py

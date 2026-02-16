@@ -12,6 +12,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+@dataclass
+class StageCost:
+    """Cost for a single processing stage (e.g. table regeneration).
+    
+    Tracks resource usage for API-calling steps that run after the initial
+    chunk-based conversion. Each stage is independently tracked and displayed
+    as a sub-line in the cost summary.
+    """
+
+    name: str
+    """Stage name (e.g. ``"table fixes"``)."""
+
+    input_tokens: int = 0
+    """Input tokens consumed by this stage (includes cache creation/read tokens)."""
+
+    output_tokens: int = 0
+    """Output tokens produced by this stage."""
+
+    cost: float = 0.0
+    """USD cost for this stage."""
+
+    elapsed_seconds: float = 0.0
+    """Time spent in this stage."""
+
+    detail: str = ""
+    """Human-readable detail (e.g. ``"3 tables"``)."""
+
+
 @dataclass(frozen=True)
 class ModelPricing:
     """Pricing tiers for a Claude model (USD per million tokens).
@@ -47,11 +75,16 @@ class ModelConfig:
     max_pdf_pages: int  # Hard API limit per request (100 for all current models)
     pricing: ModelPricing
     beta_header: str | None = None
+    supports_adaptive_thinking: bool = False
 
 
 @dataclass
 class DocumentUsageStats:
     """Token usage statistics for a single document conversion.
+
+    Base fields (``cost``, ``input_tokens``, etc.) track chunk conversion only.
+    The ``stages`` list holds additional API-calling steps (e.g. table regeneration).
+    Use the ``total_*`` properties for aggregated costs across all phases.
 
     ``cost`` is accumulated per-request to avoid the long-context pricing
     bug where aggregate totals across chunks would incorrectly exceed the
@@ -68,16 +101,40 @@ class DocumentUsageStats:
     cost: float = 0.0  # accumulated per-request USD cost
     chunks: int = 1
     elapsed_seconds: float = 0.0
+    stages: list[StageCost] = field(default_factory=list)
+    """Additional processing stages that incurred API costs."""
 
-    @property
-    def total_tokens(self) -> int:
-        """Total tokens (all input including cache + output)."""
-        return self.total_input_tokens + self.output_tokens
+    def __post_init__(self):
+        """Convert stage dicts to StageCost instances (for JSON deserialization)."""
+        self.stages = [
+            s if isinstance(s, StageCost) else StageCost(**s)
+            for s in self.stages
+        ]
 
     @property
     def total_input_tokens(self) -> int:
-        """Total input tokens including cache write/read."""
+        """Total input tokens including cache write/read (chunk conversion only)."""
         return self.input_tokens + self.cache_creation_tokens + self.cache_read_tokens
+
+    @property
+    def total_cost(self) -> float:
+        """Total USD cost: base conversion + all stages."""
+        return self.cost + sum(s.cost for s in self.stages)
+
+    @property
+    def total_elapsed(self) -> float:
+        """Total elapsed seconds: base conversion + all stages."""
+        return self.elapsed_seconds + sum(s.elapsed_seconds for s in self.stages)
+
+    @property
+    def total_all_input_tokens(self) -> int:
+        """All input tokens (base including cache + all stages)."""
+        return self.total_input_tokens + sum(s.input_tokens for s in self.stages)
+
+    @property
+    def total_all_output_tokens(self) -> int:
+        """All output tokens (base + all stages)."""
+        return self.output_tokens + sum(s.output_tokens for s in self.stages)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +158,7 @@ OPUS_4_6 = ModelConfig(
         long_ctx_output_per_mtok=37.5,  # $37.50 / MTok (>200K input)
         long_ctx_threshold=200_000,
     ),
+    supports_adaptive_thinking=True,
 )
 
 SONNET_4_5 = ModelConfig(
@@ -263,27 +321,73 @@ def format_summary(model: ModelConfig, stats: list[DocumentUsageStats]) -> str:
     total_elapsed = 0.0
 
     for s in stats:
-        cost = s.cost
+        # Document row uses grand totals
         if has_cache:
             lines.append(
-                f"{s.doc_name:<30s} {s.pages:>5d} {s.total_input_tokens:>9,} "
+                f"{s.doc_name:<30s} {s.pages:>5d} {s.total_all_input_tokens:>9,} "
                 f"{s.cache_creation_tokens:>9,} {s.cache_read_tokens:>9,} "
-                f"{s.output_tokens:>9,} "
-                f"{fmt_duration(s.elapsed_seconds):>8s} ${cost:>6.2f}"
+                f"{s.total_all_output_tokens:>9,} "
+                f"{fmt_duration(s.total_elapsed):>8s} ${s.total_cost:>6.2f}"
             )
         else:
             lines.append(
-                f"{s.doc_name:<35s} {s.pages:>5d} {s.total_input_tokens:>10,} "
-                f"{s.output_tokens:>10,} {fmt_duration(s.elapsed_seconds):>10s} "
-                f"${cost:>7.2f}"
+                f"{s.doc_name:<35s} {s.pages:>5d} {s.total_all_input_tokens:>10,} "
+                f"{s.total_all_output_tokens:>10,} {fmt_duration(s.total_elapsed):>10s} "
+                f"${s.total_cost:>7.2f}"
             )
+        
+        # Conversion sub-line (only when stages exist, for breakdown clarity)
+        if s.stages:
+            conv_label = "  conversion"
+            if s.chunks > 1:
+                conv_label += f" ({s.chunks} chunks)"
+            elif s.chunks == 1:
+                conv_label += " (1 chunk)"
+            if has_cache:
+                lines.append(
+                    f"{conv_label:<30s} {'':>5s} {s.input_tokens:>9,} "
+                    f"{s.cache_creation_tokens:>9,} {s.cache_read_tokens:>9,} "
+                    f"{s.output_tokens:>9,} "
+                    f"{fmt_duration(s.elapsed_seconds):>8s} ${s.cost:>6.2f}"
+                )
+            else:
+                lines.append(
+                    f"{conv_label:<35s} {'':>5s} {s.total_input_tokens:>10,} "
+                    f"{s.output_tokens:>10,} {fmt_duration(s.elapsed_seconds):>10s} "
+                    f"${s.cost:>7.2f}"
+                )
+        
+        # Stage sub-lines (if any)
+        # Note: Stage Input column includes rolled-in cache tokens (since stages
+        # don't use prompt caching separately), while document row separates them
+        # into distinct cache columns. This is cosmetic; totals remain accurate.
+        for stage in s.stages:
+            stage_label = f"  {stage.name}"
+            if stage.detail:
+                stage_label += f" ({stage.detail})"
+            if has_cache:
+                # Stages don't use prompt caching, show 0 for cache columns
+                lines.append(
+                    f"{stage_label:<30s} {'':>5s} {stage.input_tokens:>9,} "
+                    f"{0:>9,} {0:>9,} "
+                    f"{stage.output_tokens:>9,} "
+                    f"{fmt_duration(stage.elapsed_seconds):>8s} ${stage.cost:>6.2f}"
+                )
+            else:
+                lines.append(
+                    f"{stage_label:<35s} {'':>5s} {stage.input_tokens:>10,} "
+                    f"{stage.output_tokens:>10,} {fmt_duration(stage.elapsed_seconds):>10s} "
+                    f"${stage.cost:>7.2f}"
+                )
+        
+        # Accumulate totals
         total_pages += s.pages
-        total_input += s.total_input_tokens
-        total_output += s.output_tokens
+        total_input += s.total_all_input_tokens
+        total_output += s.total_all_output_tokens
         total_cache_creation += s.cache_creation_tokens
         total_cache_read += s.cache_read_tokens
-        total_cost += cost
-        total_elapsed += s.elapsed_seconds
+        total_cost += s.total_cost
+        total_elapsed += s.total_elapsed
 
     if has_cache:
         lines.append("-" * 100)

@@ -1417,3 +1417,48 @@ class TestBinarySequencesPageNumbers:
         assert len(bin_warnings) >= 1
         assert "page 9" in bin_warnings[0]
         assert "Table 3" in bin_warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Table validation info message
+# ---------------------------------------------------------------------------
+
+class TestTableValidationInfoMessage:
+    """Verify that table validation reports number of tables checked."""
+
+    def test_single_table(self):
+        """Should report 1 table checked."""
+        md = """
+# Test
+
+<table><tr><td>A</td><td>B</td></tr></table>
+"""
+        r = validate_output(md)
+        assert "Tables checked: 1 table" in r.info
+
+    def test_multiple_tables(self):
+        """Should report N tables checked."""
+        md = """
+# Test
+
+<table><tr><td>A</td><td>B</td></tr></table>
+
+Some text.
+
+<table><tr><td>1</td></tr><tr><td>2</td></tr></table>
+
+<table><tr><td>X</td></tr></table>
+"""
+        r = validate_output(md)
+        assert "Tables checked: 3 tables" in r.info
+
+    def test_no_tables(self):
+        """Should not report when no tables present."""
+        md = """
+# Test
+
+Just some text without tables.
+"""
+        r = validate_output(md)
+        table_info = [i for i in r.info if "table" in i.lower()]
+        assert len(table_info) == 0

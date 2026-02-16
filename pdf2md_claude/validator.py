@@ -163,6 +163,13 @@ def validate_output(markdown: str) -> ValidationResult:
     _check_binary_sequences(markdown, result)
     check_table_column_consistency(markdown, result)
 
+    # Add info message about table validation
+    table_count = len(TABLE_BLOCK_RE.findall(markdown))
+    if table_count > 0:
+        result.info.append(
+            f"Tables checked: {table_count} table{'s' if table_count != 1 else ''}"
+        )
+
     # Content integrity
     _check_fabrication(markdown, result)
 
@@ -587,8 +594,7 @@ def _find_table_title(markdown: str, table_start: int) -> str | None:
     """Find the **Table N – Title** line preceding a <table> tag.
 
     Searches backwards up to 200 characters before the table start position.
-    Returns the full bold title (e.g. "Table 6 – Application extended commands")
-    or None if not found.
+    Returns the table number label (e.g. "Table 6"), not the full title text.
     """
     search_start = max(0, table_start - 200)
     preceding = markdown[search_start:table_start]
@@ -942,6 +948,53 @@ def _extract_page_contents(markdown: str) -> dict[int, str]:
         int(m.group(1)): m.group(2)
         for m in _PAGE_CONTENT_RE.finditer(markdown)
     }
+
+
+# ---------------------------------------------------------------------------
+# Public helpers for table detection (used by table_fixer)
+# ---------------------------------------------------------------------------
+
+
+def table_page_numbers(markdown: str, start: int, end: int) -> list[int]:
+    """Resolve page numbers for a table spanning positions [start, end).
+
+    Args:
+        markdown: Full markdown content with page markers.
+        start: Start position of the table in the markdown string.
+        end: End position of the table in the markdown string.
+
+    Returns:
+        List of PDF page numbers the table spans. Empty list if page
+        markers are not present or positions are invalid.
+    """
+    pidx = _PageIndex(markdown)
+    start_page = pidx.page_at(start)
+    end_page = pidx.page_at(end - 1)
+
+    if start_page is None:
+        return []
+
+    if end_page is not None and end_page != start_page:
+        return list(range(start_page, end_page + 1))
+    else:
+        return [start_page]
+
+
+def find_table_title(markdown: str, position: int) -> str | None:
+    """Find the title for a table starting at the given position.
+
+    Searches backward for patterns like ``**Table 6 – Commands**`` and
+    returns the table number label (not the full title text).
+
+    Args:
+        markdown: Full markdown content.
+        position: Character offset where the table starts.
+
+    Returns:
+        Table number label (e.g. ``"Table 6"``), or ``None``
+        if no title pattern is found.
+    """
+    return _find_table_title(markdown, position)
 
 
 def check_page_fidelity(
