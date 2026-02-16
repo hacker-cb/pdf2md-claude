@@ -6,7 +6,7 @@ Usage::
 
     pdf2md-claude convert document.pdf
     pdf2md-claude convert *.pdf -o output/
-    pdf2md-claude remerge document.pdf
+    pdf2md-claude convert document.pdf --from merge
     pdf2md-claude validate document.pdf
     pdf2md-claude show-prompt
     pdf2md-claude init-rules
@@ -27,21 +27,10 @@ import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
-from pdf2md_claude.claude_api import ClaudeApi
-from pdf2md_claude.client import create_client
-from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK, PdfConverter
+from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
-from pdf2md_claude.formatter import FormatMarkdownStep
-from pdf2md_claude.pipeline import (
-    ConversionPipeline,
-    ExtractImagesStep,
-    MergeContinuedTablesStep,
-    ProcessingStep,
-    StripAIDescriptionsStep,
-    ValidateStep,
-    resolve_output,
-)
+from pdf2md_claude.pipeline import ConversionPipeline, resolve_output
 from pdf2md_claude.prompt import SYSTEM_PROMPT
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
 from pdf2md_claude.rules import (
@@ -241,7 +230,6 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog="""
 Commands:
   convert       Convert PDF documents to Markdown (requires ANTHROPIC_API_KEY)
-  remerge       Re-merge from cached chunks (no API calls needed)
   validate      Validate converted output (no API key needed)
   show-prompt   Print the system prompt to stdout
   init-rules    Generate a rules template file
@@ -250,7 +238,7 @@ Examples:
   %(prog)s convert document.pdf              Convert single PDF
   %(prog)s convert *.pdf -o output/          Convert all PDFs to output dir
   %(prog)s convert doc.pdf -f --cache        Force reconvert with caching
-  %(prog)s remerge document.pdf              Re-merge from cached chunks
+  %(prog)s convert doc.pdf --from merge      Re-merge from cached chunks
   %(prog)s validate document.pdf              Validate converted output
   %(prog)s show-prompt                       Show default system prompt
   %(prog)s init-rules                        Generate .pdf2md.rules template
@@ -285,6 +273,7 @@ Examples:
   %(prog)s doc.pdf -f                       Force reconvert
   %(prog)s doc.pdf --rules my_rules.txt     Use custom rules
   %(prog)s doc.pdf                          Auto-applies .pdf2md.rules if found
+  %(prog)s doc.pdf --from merge             Re-merge from cached chunks
         """,
     )
     p_convert.add_argument(
@@ -348,30 +337,16 @@ Examples:
         help="Custom rules file (replace/append/add rules). "
              "Use -f to reconvert after changing rules.",
     )
-
-    # -- remerge ---------------------------------------------------------------
-    p_remerge = subparsers.add_parser(
-        "remerge",
-        parents=[verbose_parent, output_parent, image_parent],
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        help="Re-merge from cached chunks (no API calls)",
-        description="Re-run merge + post-processing + write from cached "
-                    "chunks. No API calls, no ANTHROPIC_API_KEY needed. "
-                    "Useful for debugging merge/post-processing logic.",
-        epilog="""
-Examples:
-  %(prog)s document.pdf                     Re-merge single PDF
-  %(prog)s *.pdf                            Re-merge all PDFs
-  %(prog)s doc.pdf --no-images              Re-merge without image extraction
-  %(prog)s doc.pdf --image-mode debug       Re-merge with debug image mode
-        """,
-    )
-    p_remerge.add_argument(
-        "pdfs",
-        nargs="+",
-        type=Path,
-        help="PDF file(s) to re-merge "
-             "(must have existing .staging/ directories)",
+    p_convert.add_argument(
+        "--from",
+        dest="from_step",
+        choices=["merge"],
+        default=None,
+        metavar="STEP",
+        help="Skip earlier pipeline stages and start from STEP. "
+             "'merge' re-runs merge + post-processing from cached "
+             "chunks (no API calls). Requires a prior conversion "
+             "with a populated .staging/ directory.",
     )
 
     # -- validate --------------------------------------------------------------
@@ -485,25 +460,6 @@ def _resolve_file_paths(
         resolved.append(rp)
     resolved.sort(key=lambda p: p.name)
     return resolved
-
-
-def _build_steps(args: argparse.Namespace) -> list[ProcessingStep]:
-    """Build the processing step chain from CLI args.
-
-    Used by both ``convert`` and ``remerge`` commands.
-    """
-    steps: list[ProcessingStep] = [MergeContinuedTablesStep()]
-    if not args.no_images:
-        steps.append(ExtractImagesStep(
-            image_mode=ImageMode(args.image_mode),
-            render_dpi=args.image_dpi,
-        ))
-    if args.strip_ai_descriptions:
-        steps.append(StripAIDescriptionsStep())
-    if not args.no_format:
-        steps.append(FormatMarkdownStep())
-    steps.append(ValidateStep())
-    return steps
 
 
 
@@ -650,44 +606,6 @@ def _validate_files(
     return 1 if (total_errors > 0 or failed > 0) else 0
 
 
-def _convert_single_pdf(
-    pdf_path: Path,
-    *,
-    model: ModelConfig,
-    client: anthropic.Anthropic,
-    pipeline: ConversionPipeline,
-    pages_per_chunk: int,
-    max_pages: int | None,
-    force: bool,
-    use_cache: bool,
-    max_retries: int,
-    rules_path: Path | None,
-    rules_cache: dict[Path, str],
-) -> DocumentUsageStats:
-    """Convert a single PDF and return its usage stats.
-
-    Raises on failure so the caller can count success/failure.
-    """
-    system_prompt = _resolve_rules(pdf_path, rules_path, rules_cache)
-
-    api = ClaudeApi(
-        client, model,
-        use_cache=use_cache,
-        max_retries=max_retries,
-    )
-    converter = PdfConverter(
-        api, model,
-        system_prompt=system_prompt,
-    )
-    result = pipeline.convert(
-        converter,
-        pages_per_chunk=pages_per_chunk,
-        max_pages=max_pages,
-        force=force,
-    )
-    return result.stats
-
-
 @dataclass
 class _DocConvertResult:
     """Result of processing a single document (for parallel collection)."""
@@ -703,17 +621,23 @@ def _convert_one_document(
     *,
     output_dir: Path | None,
     model: ModelConfig,
-    client: anthropic.Anthropic,
-    steps: list[ProcessingStep],
+    api_key: str,
     pages_per_chunk: int,
     max_pages: int | None,
     force: bool,
     use_cache: bool,
     max_retries: int,
     system_prompt: str | None,
+    image_mode: ImageMode,
+    image_dpi: int | None,
+    no_images: bool,
+    strip_ai_descriptions: bool,
+    no_format: bool,
+    from_step: str | None = None,
 ) -> _DocConvertResult:
-    """Thread-safe worker for converting a single PDF.
+    """Convert a single PDF: check staleness, run pipeline.
 
+    Used as the per-document worker in both sequential and parallel modes.
     Sets the per-thread document context so that all log lines emitted
     during this document's processing carry the ``[doc_name]`` prefix.
     """
@@ -721,11 +645,22 @@ def _convert_one_document(
     set_document_context(doc_name)
     try:
         output_file = resolve_output(pdf_path, output_dir)
-        pipeline = ConversionPipeline(steps, pdf_path, output_file)
+        pipeline = ConversionPipeline(
+            pdf_path,
+            output_file,
+            api_key=api_key,
+            model=model,
+            use_cache=use_cache,
+            max_retries=max_retries,
+            system_prompt=system_prompt,
+            image_mode=image_mode,
+            image_dpi=image_dpi,
+            no_images=no_images,
+            strip_ai_descriptions=strip_ai_descriptions,
+            no_format=no_format,
+        )
 
-        if not pipeline.needs_conversion(
-            force=force, model_id=model.model_id,
-        ):
+        if not pipeline.needs_conversion(force=force or bool(from_step)):
             cached_stats = pipeline.load_cached_stats()
             if cached_stats is not None:
                 _log.info(
@@ -741,20 +676,11 @@ def _convert_one_document(
             pages_per_chunk, force=force,
         )
 
-        api = ClaudeApi(
-            client, model,
-            use_cache=use_cache,
-            max_retries=max_retries,
-        )
-        converter = PdfConverter(
-            api, model,
-            system_prompt=system_prompt,
-        )
-        result = pipeline.convert(
-            converter,
+        result = pipeline.run(
             pages_per_chunk=effective_ppc,
             max_pages=max_pages,
             force=force,
+            from_step=from_step,
         )
         return _DocConvertResult(pdf_path, "converted", stats=result.stats)
 
@@ -768,18 +694,17 @@ def _convert_one_document(
 
 
 def _log_summary(
-    model: ModelConfig | None,
+    model: ModelConfig,
     all_stats: list[DocumentUsageStats],
     total_elapsed: float,
     success: int,
     failure: int,
     cached: int,
-    remerge: bool,
 ) -> None:
-    """Print the final conversion/remerge summary block."""
+    """Print the final conversion summary block."""
     _log.info("")
     _log.info(_SUMMARY_SEP)
-    if all_stats and not remerge and model is not None:
+    if all_stats:
         _log.info("")
         summary = format_summary(model, all_stats)
         for line in summary.split("\n"):
@@ -787,13 +712,7 @@ def _log_summary(
         _log.info("")
     _log.info(_SUMMARY_SEP)
     _log.info("Total time: %.1fs", total_elapsed)
-    if remerge:
-        _log.info("Results: %d remerged, %d failed", success, failure)
-    else:
-        _log.info(
-            "Results: %d converted, %d failed, %d cached",
-            success, failure, cached,
-        )
+    _log.info("Results: %d processed, %d failed, %d cached", success, failure, cached)
     _log.info(_SUMMARY_SEP)
 
 
@@ -843,65 +762,16 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return _validate_files(pdf_paths, output_dir)
 
 
-def _cmd_remerge(args: argparse.Namespace) -> int:
-    """Handle the ``remerge`` command."""
-    _setup_logging(args.verbose)
-
-    pdf_paths = _resolve_file_paths(args.pdfs, "PDF", expected_suffix=".pdf")
-    if pdf_paths is None:
-        return 1
-
-    output_dir = args.output_dir.resolve() if args.output_dir else None
-    steps = _build_steps(args)
-
-    _log.info("pdf2md-claude %s", __version__)
-    _log.info("Found %d PDF(s) to process", len(pdf_paths))
-    _log.info("Mode: remerge (re-merge from cached chunks, no API calls)")
-    if output_dir:
-        _log.info("Output directory: %s", output_dir)
-    else:
-        _log.info("Output: next to each PDF")
-
-    # Ensure output directory exists (if explicitly set).
-    if output_dir:
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-    total_start = time.time()
-    all_stats: list[DocumentUsageStats] = []
-    success = 0
-    failure = 0
-
-    try:
-        for pdf_path in pdf_paths:
-            doc_name = pdf_path.stem
-            output_file = resolve_output(pdf_path, output_dir)
-            pipeline = ConversionPipeline(steps, pdf_path, output_file)
-
-            _log.info("%s:", doc_name)
-            try:
-                result = pipeline.remerge()
-                all_stats.append(result.stats)
-                success += 1
-            except Exception as e:
-                _log.error(
-                    "  ✗ %s: %s: %s", doc_name, type(e).__name__, e,
-                )
-                failure += 1
-
-        total_elapsed = time.time() - total_start
-        _log_summary(
-            None, all_stats, total_elapsed,
-            success, failure, cached=0, remerge=True,
-        )
-        return 1 if failure > 0 else 0
-
-    except Exception as e:
-        _log.error("Fatal error: %s", e)
-        return 1
-
-
 def _cmd_convert(args: argparse.Namespace) -> int:
     """Handle the ``convert`` command."""
+    # Early validation: --from and --force are mutually exclusive.
+    if args.from_step and args.force:
+        print(
+            "error: --from and --force are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 1
+
     # Validate rules file early (before logging setup).
     if args.rules and not args.rules.is_file():
         print(
@@ -917,8 +787,11 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         return 1
 
     output_dir = args.output_dir.resolve() if args.output_dir else None
+
+    # Model and chunking setup (always performed).
     model = MODELS[args.model]
-    pages_per_chunk: int = args.pages_per_chunk
+    pages_per_chunk = args.pages_per_chunk
+    image_mode = ImageMode(args.image_mode)
 
     # Validate pages_per_chunk against the API hard limit.
     if pages_per_chunk < 1:
@@ -931,39 +804,33 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         )
         return 1
 
-    steps = _build_steps(args)
-
     try:
         _log.info("pdf2md-claude %s", __version__)
         _log.info("Found %d PDF(s) to process", len(pdf_paths))
-        _log.info(
-            "Model: %s (%s)", model.display_name, model.model_id,
-        )
+        _log.info("Model: %s (%s)", model.display_name, model.model_id)
         _log.info(
             "Chunking: %d pages/chunk (API limit: %d)",
             pages_per_chunk, model.max_pdf_pages,
         )
+        if args.from_step:
+            _log.info("Starting from: %s (no API calls for earlier steps)", args.from_step)
+        if args.cache:
+            _log.info("Prompt caching: ENABLED (1h TTL)")
+
         if output_dir:
             _log.info("Output directory: %s", output_dir)
         else:
             _log.info("Output: next to each PDF")
-        if args.cache:
-            _log.info("Prompt caching: ENABLED (1h TTL)")
 
+        # API key validation (always performed).
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             _log.error("ANTHROPIC_API_KEY environment variable not set")
             return 1
-        client = create_client(api_key, model)
 
         # Ensure output directory exists (if explicitly set).
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
-
-        jobs: int = args.jobs
-        if jobs <= _JOBS_AUTO:
-            # -j without a number (or -j 0): auto = one worker per document.
-            jobs = len(pdf_paths)
 
         total_start = time.time()
         all_stats: list[DocumentUsageStats] = []
@@ -971,20 +838,25 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         failure = 0
         cached = 0
 
+        # Pre-resolve rules per PDF (before branching to sequential/parallel).
+        rules_cache: dict[Path, str] = {}
+        system_prompts: dict[Path, str | None] = {}
+        for pdf_path in pdf_paths:
+            system_prompts[pdf_path] = _resolve_rules(
+                pdf_path, args.rules, rules_cache,
+            )
+
+        # Resolve effective worker count.
+        jobs = args.jobs
+        if jobs <= _JOBS_AUTO:
+            # -j without a number (or -j 0): auto = one worker per document.
+            jobs = len(pdf_paths)
+
         if jobs > 1:
             # -- Parallel path -------------------------------------------------
             # Compute aligned prefix width for parallel log output.
             global _doc_prefix_width  # noqa: PLW0603
             _doc_prefix_width = max(len(p.stem) for p in pdf_paths) + 2  # +2 for []
-
-            # Pre-resolve rules per PDF in the main thread (rules_cache is
-            # only touched here, then discarded).
-            rules_cache: dict[Path, str] = {}
-            system_prompts: dict[Path, str | None] = {}
-            for pdf_path in pdf_paths:
-                system_prompts[pdf_path] = _resolve_rules(
-                    pdf_path, args.rules, rules_cache,
-                )
 
             max_workers = min(jobs, len(pdf_paths))
             if max_workers > 1:
@@ -997,14 +869,19 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                         pdf_path,
                         output_dir=output_dir,
                         model=model,
-                        client=client,
-                        steps=steps,
+                        api_key=api_key,
                         pages_per_chunk=pages_per_chunk,
                         max_pages=args.max_pages,
                         force=args.force,
                         use_cache=args.cache,
                         max_retries=args.retries,
                         system_prompt=system_prompts[pdf_path],
+                        image_mode=image_mode,
+                        image_dpi=args.image_dpi,
+                        no_images=args.no_images,
+                        strip_ai_descriptions=args.strip_ai_descriptions,
+                        no_format=args.no_format,
+                        from_step=args.from_step,
                     ): pdf_path
                     for pdf_path in pdf_paths
                 }
@@ -1019,61 +896,39 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                     else:
                         failure += 1
         else:
-            # -- Sequential path (unchanged behaviour) -------------------------
-            rules_cache_seq: dict[Path, str] = {}
-
+            # -- Sequential path -----------------------------------------------
             for pdf_path in pdf_paths:
-                doc_name = pdf_path.stem
-                output_file = resolve_output(pdf_path, output_dir)
-                pipeline = ConversionPipeline(steps, pdf_path, output_file)
-
-                if not pipeline.needs_conversion(
-                    force=args.force, model_id=model.model_id,
-                ):
-                    cached_stats = pipeline.load_cached_stats()
-                    if cached_stats is not None:
-                        all_stats.append(cached_stats)
-                        _log.info(
-                            "⊙ %s (cached, $%.2f)",
-                            doc_name, cached_stats.cost,
-                        )
-                    else:
-                        _log.info("⊙ %s (cached)", doc_name)
-                    cached += 1
-                    continue
-
-                _log.info("%s:", doc_name)
-
-                effective_ppc = pipeline.resolve_pages_per_chunk(
-                    pages_per_chunk, force=args.force,
+                result = _convert_one_document(
+                    pdf_path,
+                    output_dir=output_dir,
+                    model=model,
+                    api_key=api_key,
+                    pages_per_chunk=pages_per_chunk,
+                    max_pages=args.max_pages,
+                    force=args.force,
+                    use_cache=args.cache,
+                    max_retries=args.retries,
+                    system_prompt=system_prompts[pdf_path],
+                    image_mode=image_mode,
+                    image_dpi=args.image_dpi,
+                    no_images=args.no_images,
+                    strip_ai_descriptions=args.strip_ai_descriptions,
+                    no_format=args.no_format,
+                    from_step=args.from_step,
                 )
-
-                try:
-                    stats = _convert_single_pdf(
-                        pdf_path,
-                        model=model,
-                        client=client,
-                        pipeline=pipeline,
-                        pages_per_chunk=effective_ppc,
-                        max_pages=args.max_pages,
-                        force=args.force,
-                        use_cache=args.cache,
-                        max_retries=args.retries,
-                        rules_path=args.rules,
-                        rules_cache=rules_cache_seq,
-                    )
-                    all_stats.append(stats)
+                if result.stats is not None:
+                    all_stats.append(result.stats)
+                if result.status == "converted":
                     success += 1
-                except Exception as e:
-                    _log.error(
-                        "  ✗ %s: %s: %s", doc_name, type(e).__name__, e,
-                    )
+                elif result.status == "cached":
+                    cached += 1
+                else:
                     failure += 1
 
         total_elapsed = time.time() - total_start
         _log_summary(
             model, all_stats, total_elapsed,
-            success, failure, cached, remerge=False,
+            success, failure, cached,
         )
         return 1 if failure > 0 else 0
 
@@ -1105,7 +960,6 @@ def main() -> int:
 
     handlers = {
         "convert": _cmd_convert,
-        "remerge": _cmd_remerge,
         "validate": _cmd_validate,
         "show-prompt": _cmd_show_prompt,
         "init-rules": _cmd_init_rules,

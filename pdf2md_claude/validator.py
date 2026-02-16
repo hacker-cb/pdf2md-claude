@@ -161,7 +161,7 @@ def validate_output(markdown: str) -> ValidationResult:
 
     # Table content quality
     _check_binary_sequences(markdown, result)
-    _check_table_column_consistency(markdown, result)
+    check_table_column_consistency(markdown, result)
 
     # Content integrity
     _check_fabrication(markdown, result)
@@ -677,7 +677,7 @@ def _compute_table_column_counts(table_html: str) -> list[int]:
     return counts
 
 
-def _check_table_column_consistency(
+def check_table_column_consistency(
     markdown: str, result: ValidationResult
 ) -> None:
     """Check that every row in each HTML table has the same column count.

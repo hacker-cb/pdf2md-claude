@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from pdf2md_claude.formatter import FormatMarkdownStep
+from pdf2md_claude.models import MODELS
 from pdf2md_claude.pipeline import (
     ConversionPipeline,
     ExtractImagesStep,
@@ -40,6 +42,10 @@ class RecordingStep:
     def name(self) -> str:
         return self.label
 
+    @property
+    def key(self) -> str:
+        return self.label.lower().replace(" ", "-")
+
     def run(self, ctx: ProcessingContext) -> None:
         self.calls.append(self.label)
         if self.suffix:
@@ -52,6 +58,10 @@ class FailingStep:
 
     @property
     def name(self) -> str:
+        return "failing"
+
+    @property
+    def key(self) -> str:
         return "failing"
 
     def run(self, ctx: ProcessingContext) -> None:
@@ -76,12 +86,20 @@ def _make_pipeline(
     pdf_path: Path = _DUMMY_PDF,
     output_file: Path = _DUMMY_OUTPUT,
 ) -> ConversionPipeline:
-    """Create a ConversionPipeline with dummy paths for testing."""
-    return ConversionPipeline(
-        steps=steps or [],
-        pdf_path=pdf_path,
-        output_file=output_file,
+    """Create a ConversionPipeline with dummy paths for testing.
+    
+    If steps are provided, they override the default step chain by directly
+    setting pipeline._steps after construction.
+    """
+    pipeline = ConversionPipeline(
+        pdf_path,
+        output_file,
+        api_key="test-key",
+        model=MODELS["sonnet"],
     )
+    if steps is not None:
+        pipeline._steps = steps
+    return pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +153,28 @@ class TestProcessingStepProtocol:
         assert ExtractImagesStep().name == "extract images"
         assert ValidateStep().name == "validate"
 
+    def test_builtin_steps_have_key_property(self):
+        """All built-in steps must have a key property."""
+        steps = [
+            MergeContinuedTablesStep(),
+            ExtractImagesStep(),
+            StripAIDescriptionsStep(),
+            FormatMarkdownStep(),
+            ValidateStep(),
+        ]
+        for step in steps:
+            assert hasattr(step, "key"), f"{step.name} missing key property"
+            assert isinstance(step.key, str), f"{step.name}.key must be str"
+            assert step.key, f"{step.name}.key must be non-empty"
+
+    def test_builtin_step_keys_are_stable(self):
+        """Verify specific key values for built-in steps."""
+        assert MergeContinuedTablesStep().key == "tables"
+        assert ExtractImagesStep().key == "images"
+        assert StripAIDescriptionsStep().key == "strip-ai"
+        assert FormatMarkdownStep().key == "format"
+        assert ValidateStep().key == "validate"
+
 
 # ---------------------------------------------------------------------------
 # _merge() tests
@@ -184,7 +224,7 @@ class TestRunSteps:
     """Tests for ConversionPipeline._run_steps()."""
 
     def test_empty_steps(self):
-        pipeline = _make_pipeline()
+        pipeline = _make_pipeline(steps=[])
         ctx = _make_ctx("content")
         pipeline._run_steps(ctx)
         assert ctx.markdown == "content"
@@ -204,6 +244,10 @@ class TestRunSteps:
         class WarnStep:
             @property
             def name(self) -> str:
+                return "warn"
+
+            @property
+            def key(self) -> str:
                 return "warn"
 
             def run(self, ctx: ProcessingContext) -> None:
@@ -267,7 +311,7 @@ class TestProcess:
         step = RecordingStep(label="transform", suffix="\n## Added by step")
         
         # Pipeline derives staging dir from output_file -> result.staging
-        (tmp_path / "result.staging" / "pass1").mkdir(parents=True)
+        (tmp_path / "result.staging" / "chunks").mkdir(parents=True)
         pipeline = _make_pipeline(steps=[step], output_file=output_file)
 
         ctx, step_timings = pipeline._process(
@@ -403,7 +447,10 @@ class TestResolvePagesPerChunk:
     def test_no_workdir_returns_requested(self, tmp_path: Path):
         """When no workdir exists, returns the requested value."""
         output_file = tmp_path / "doc.md"
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 10
 
     def test_manifest_matches_returns_silently(self, tmp_path: Path):
@@ -411,7 +458,10 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=15)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(15) == 15
 
     def test_manifest_mismatch_returns_manifest_value(self, tmp_path: Path):
@@ -419,7 +469,10 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 20
 
     def test_manifest_mismatch_logs_warning(self, tmp_path: Path, caplog):
@@ -427,7 +480,10 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
         import logging
         with caplog.at_level(logging.WARNING, logger="pipeline"):
             pipeline.resolve_pages_per_chunk(10)
@@ -444,7 +500,10 @@ class TestResolvePagesPerChunk:
         staging_dir.mkdir()
         (staging_dir / "manifest.json").write_text("bad json", encoding="utf-8")
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10) == 10
 
     def test_force_bypasses_manifest(self, tmp_path: Path):
@@ -452,7 +511,10 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
         assert pipeline.resolve_pages_per_chunk(10, force=True) == 10
 
     def test_force_no_warning(self, tmp_path: Path, caplog):
@@ -460,7 +522,10 @@ class TestResolvePagesPerChunk:
         output_file = tmp_path / "doc.md"
         _write_manifest(tmp_path / "doc.staging", pages_per_chunk=20)
 
-        pipeline = ConversionPipeline([], _DUMMY_PDF, output_file)
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
         import logging
         with caplog.at_level(logging.WARNING, logger="pipeline"):
             pipeline.resolve_pages_per_chunk(10, force=True)
@@ -468,3 +533,65 @@ class TestResolvePagesPerChunk:
         assert not any(
             "pages_per_chunk" in msg for msg in caplog.messages
         )
+
+
+# ---------------------------------------------------------------------------
+# run() from_step validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunFromStepValidation:
+    """Tests for ConversionPipeline.run() from_step validation."""
+
+    def test_unsupported_from_step_raises_value_error(self, tmp_path: Path):
+        """run() raises ValueError for unsupported from_step values."""
+        output_file = tmp_path / "doc.md"
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
+
+        with pytest.raises(ValueError, match="Unsupported --from step: 'unknown'"):
+            pipeline.run(pages_per_chunk=10, from_step="unknown")
+
+    def test_merge_passes_validation_guard(self, tmp_path: Path):
+        """from_step='merge' passes the ValueError guard (hits RuntimeError next)."""
+        output_file = tmp_path / "doc.md"
+        pipeline = ConversionPipeline(
+            _DUMMY_PDF, output_file, api_key="test-key", model=MODELS["sonnet"]
+        )
+        pipeline._steps = []
+        # No staging dir → RuntimeError proves it passed the ValueError check.
+        with pytest.raises(RuntimeError, match="Staging directory not found"):
+            pipeline.run(pages_per_chunk=10, from_step="merge")
+
+    def test_none_from_step_runs_full_conversion(self, tmp_path: Path):
+        """from_step=None proceeds to full conversion without ValueError."""
+        from unittest.mock import Mock, patch
+
+        output_file = tmp_path / "doc.md"
+        (tmp_path / "doc.staging" / "chunks").mkdir(parents=True)
+
+        mock_model = Mock()
+        mock_model.model_id = "test-model"
+        mock_model.beta_header = None
+
+        # Patch anthropic.Anthropic and PdfConverter
+        with patch("pdf2md_claude.pipeline.anthropic.Anthropic") as mock_anthropic_class:
+            with patch("pdf2md_claude.pipeline.PdfConverter") as mock_converter_class:
+                mock_converter = Mock()
+                mock_converter.convert.return_value = Mock(
+                    chunks=[], stats=Mock(), cached_chunks=0, fresh_chunks=0,
+                )
+                mock_converter_class.return_value = mock_converter
+
+                pipeline = ConversionPipeline(
+                    _DUMMY_PDF, output_file,
+                    api_key="test-key",
+                    model=mock_model,
+                )
+                pipeline._steps = []
+                result = pipeline.run(pages_per_chunk=10, from_step=None)
+                assert result is not None
+                mock_converter.convert.assert_called_once()
+                mock_anthropic_class.assert_called_once_with(api_key="test-key")

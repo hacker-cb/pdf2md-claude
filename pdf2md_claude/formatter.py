@@ -287,6 +287,10 @@ class FormatMarkdownStep:
     def name(self) -> str:
         return "format markdown"
 
+    @property
+    def key(self) -> str:
+        return "format"
+
     def run(self, ctx: ProcessingContext) -> None:
         ctx.markdown = format_markdown(ctx.markdown)
 

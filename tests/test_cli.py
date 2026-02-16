@@ -90,53 +90,32 @@ class TestConvertArgs:
     def test_requires_at_least_one_pdf(self):
         _parse_fails(["convert"])
 
-
-# ---------------------------------------------------------------------------
-# remerge subcommand
-# ---------------------------------------------------------------------------
-
-
-class TestRemergeArgs:
-    """Argument parsing for the ``remerge`` subcommand."""
-
-    def test_minimal(self):
-        args = _parse(["remerge", "doc.pdf"])
-        assert args.command == "remerge"
+    def test_from_merge(self):
+        """--from merge parses correctly."""
+        args = _parse(["convert", "doc.pdf", "--from", "merge"])
+        assert args.command == "convert"
+        assert args.from_step == "merge"
         assert len(args.pdfs) == 1
 
-    def test_with_output_dir(self):
-        args = _parse(["remerge", "doc.pdf", "-o", "/tmp/out"])
-        assert str(args.output_dir) == "/tmp/out"
+    def test_from_merge_default(self):
+        """Without --from, from_step defaults to None."""
+        args = _parse(["convert", "doc.pdf"])
+        assert args.from_step is None
 
-    def test_verbose(self):
-        args = _parse(["remerge", "doc.pdf", "-v"])
-        assert args.verbose is True
-
-    def test_image_options(self):
+    def test_from_merge_with_image_options(self):
+        """--from merge works with image processing options."""
         args = _parse([
-            "remerge", "doc.pdf",
+            "convert", "doc.pdf", "--from", "merge",
             "--no-images",
             "--image-mode", "debug",
-            "--image-dpi", "150",
-            "--strip-ai-descriptions",
         ])
+        assert args.from_step == "merge"
         assert args.no_images is True
         assert args.image_mode == "debug"
-        assert args.image_dpi == 150
-        assert args.strip_ai_descriptions is True
 
-    def test_requires_at_least_one_pdf(self):
-        _parse_fails(["remerge"])
-
-    def test_rejects_convert_only_flags(self):
-        """Flags like --force, --model, --cache belong to convert only."""
-        _parse_fails(["remerge", "doc.pdf", "--force"])
-        _parse_fails(["remerge", "doc.pdf", "--model", "sonnet"])
-        _parse_fails(["remerge", "doc.pdf", "--cache"])
-        _parse_fails(["remerge", "doc.pdf", "--retries", "3"])
-        _parse_fails(["remerge", "doc.pdf", "--max-pages", "5"])
-        _parse_fails(["remerge", "doc.pdf", "--rules", "r.txt"])
-        _parse_fails(["remerge", "doc.pdf", "--pages-per-chunk", "5"])
+    def test_from_invalid_step(self):
+        """Invalid --from value is rejected."""
+        _parse_fails(["convert", "doc.pdf", "--from", "invalid"])
 
 
 # ---------------------------------------------------------------------------
@@ -240,8 +219,7 @@ class TestTopLevel:
         _parse_fails(["nonexistent", "doc.pdf"])
 
     def test_old_flat_flags_rejected(self):
-        """Old-style flags (--remerge, --validate) no longer work."""
-        _parse_fails(["--remerge", "doc.pdf"])
+        """Old-style flags (--validate, --show-prompt, etc.) no longer work."""
         _parse_fails(["--validate", "doc.pdf"])
         _parse_fails(["--show-prompt"])
         _parse_fails(["--init-rules"])

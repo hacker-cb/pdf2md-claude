@@ -1,15 +1,16 @@
 """Single-document conversion pipeline.
 
 Orchestrates the full flow for one PDF: work directory management,
-chunked conversion, deterministic merge, pluggable processing steps,
-and output writing.
+chunked conversion, deterministic merge, processing steps, and output
+writing.
 
-The pipeline uses a step-based architecture: after merging chunks,
-a configurable list of :class:`ProcessingStep` objects is executed
-in order.  Each step receives a shared :class:`ProcessingContext`
-and can modify the markdown content and/or append validation messages.
+The pipeline builds its processing step chain internally from
+configuration flags passed at construction time.  After merging
+chunks, the steps are executed in order; each step receives a shared
+:class:`ProcessingContext` and can modify the markdown content and/or
+append validation messages.
 
-Built-in steps:
+Built-in steps (always in this order, some conditionally included):
 
 - :class:`MergeContinuedTablesStep` — merges split tables.
 - :class:`ExtractImagesStep` — renders and injects images.
@@ -17,8 +18,9 @@ Built-in steps:
 - :class:`FormatMarkdownStep` — prettifies HTML tables and normalizes spacing.
 - :class:`ValidateStep` — runs quality checks.
 
-Also provides :meth:`ConversionPipeline.remerge` for re-running merge +
-steps + write from cached chunks without any API calls.
+The :meth:`ConversionPipeline.run` method provides a unified entry point
+that supports full API-based conversion (``from_step=None``) or re-running
+from cached chunks (``from_step="merge"``), with no API calls.
 """
 
 from __future__ import annotations
@@ -30,12 +32,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+import anthropic
+
+from pdf2md_claude.claude_api import ClaudeApi
 from pdf2md_claude.converter import ConversionResult, PdfConverter
 from pdf2md_claude.formatter import FormatMarkdownStep
 from pdf2md_claude.images import ImageExtractor, ImageMode
 from pdf2md_claude.markers import IMAGE_AI_DESCRIPTION_BLOCK_RE
 from pdf2md_claude.merger import merge_chunks, merge_continued_tables
-from pdf2md_claude.models import DocumentUsageStats
+from pdf2md_claude.models import DocumentUsageStats, ModelConfig
 from pdf2md_claude.validator import ValidationResult, check_page_fidelity, validate_output
 from pdf2md_claude.workdir import WorkDir
 
@@ -95,8 +100,8 @@ class ProcessingContext:
 class ProcessingStep(Protocol):
     """Protocol for a single processing step in the pipeline.
 
-    Any class with a :attr:`name` property and a :meth:`run` method
-    that accepts a :class:`ProcessingContext` qualifies.
+    Any class with a :attr:`name`, :attr:`key` property and a :meth:`run`
+    method that accepts a :class:`ProcessingContext` qualifies.
 
     Steps may:
 
@@ -108,6 +113,11 @@ class ProcessingStep(Protocol):
     @property
     def name(self) -> str:
         """Human-readable step name for logging."""
+        ...
+
+    @property
+    def key(self) -> str:
+        """Stable identifier for the step (used with ``--from`` flag)."""
         ...
 
     def run(self, ctx: ProcessingContext) -> None:
@@ -133,6 +143,10 @@ class MergeContinuedTablesStep:
     def name(self) -> str:
         return "merge continued tables"
 
+    @property
+    def key(self) -> str:
+        return "tables"
+
     def run(self, ctx: ProcessingContext) -> None:
         ctx.markdown = merge_continued_tables(ctx.markdown)
 
@@ -154,6 +168,10 @@ class ExtractImagesStep:
     @property
     def name(self) -> str:
         return "extract images"
+
+    @property
+    def key(self) -> str:
+        return "images"
 
     def run(self, ctx: ProcessingContext) -> None:
         if ctx.pdf_path is None:
@@ -186,6 +204,10 @@ class StripAIDescriptionsStep:
     def name(self) -> str:
         return "strip AI descriptions"
 
+    @property
+    def key(self) -> str:
+        return "strip-ai"
+
     def run(self, ctx: ProcessingContext) -> None:
         ctx.markdown = IMAGE_AI_DESCRIPTION_BLOCK_RE.sub("", ctx.markdown)
         ctx.markdown = _CONSECUTIVE_BLANK_LINES_RE.sub("\n\n", ctx.markdown)
@@ -202,6 +224,10 @@ class ValidateStep:
 
     @property
     def name(self) -> str:
+        return "validate"
+
+    @property
+    def key(self) -> str:
         return "validate"
 
     def run(self, ctx: ProcessingContext) -> None:
@@ -229,8 +255,7 @@ class ValidateStep:
 class PipelineResult:
     """Result of the full single-document conversion pipeline.
 
-    Returned by :meth:`ConversionPipeline.convert` and
-    :meth:`ConversionPipeline.remerge` for the CLI to consume.
+    Returned by :meth:`ConversionPipeline.run` for the CLI to consume.
     Does **not** keep the merged markdown in memory (it is on disk).
     """
 
@@ -252,32 +277,93 @@ class ConversionPipeline:
     """Orchestrates the full single-document conversion pipeline.
 
     Created per document with the source PDF path and target output file.
-    Holds an ordered list of :class:`ProcessingStep` objects that are
-    executed after chunk merging.  Provides :meth:`convert` (full
-    API-based conversion) and :meth:`remerge` (re-merge from cached
-    chunks, no API calls).
+    Processing steps are built internally from configuration flags.
+    Provides :meth:`run` as a unified entry point supporting full API-based
+    conversion (``from_step=None``) or re-running from cached chunks
+    (``from_step="merge"``, no API calls).
+
+    The step chain is always: tables → images → strip-ai → format → validate,
+    with some steps conditionally included based on flags.
 
     Usage::
 
-        steps = [
-            MergeContinuedTablesStep(),
-            ExtractImagesStep(image_mode=ImageMode.AUTO, render_dpi=600),
-            ValidateStep(),
-        ]
-        pipeline = ConversionPipeline(steps, pdf_path, output_file)
-        result = pipeline.convert(converter, pages_per_chunk=10)
+        pipeline = ConversionPipeline(
+            pdf_path,
+            output_file,
+            api_key=api_key,
+            model=model_config,
+            image_mode=ImageMode.AUTO,
+            image_dpi=600,
+        )
+        result = pipeline.run(pages_per_chunk=10)
     """
 
     def __init__(
         self,
-        steps: list[ProcessingStep],
         pdf_path: Path,
         output_file: Path,
+        *,
+        api_key: str,
+        model: ModelConfig,
+        use_cache: bool = False,
+        max_retries: int = 10,
+        system_prompt: str | None = None,
+        image_mode: ImageMode = ImageMode.AUTO,
+        image_dpi: int | None = None,
+        no_images: bool = False,
+        strip_ai_descriptions: bool = False,
+        no_format: bool = False,
     ) -> None:
-        self._steps = steps
         self._pdf_path = pdf_path
         self._output_file = output_file
         self._work_dir = WorkDir(output_file.with_suffix(".staging"))
+        self._model = model
+        
+        # Step configuration
+        self._image_mode = image_mode
+        self._image_dpi = image_dpi
+        self._no_images = no_images
+        self._strip_ai_descriptions = strip_ai_descriptions
+        self._no_format = no_format
+        
+        # Build step chain
+        self._steps = self._build_steps()
+        
+        # Create API objects
+        client_kwargs: dict = {"api_key": api_key}
+        if model.beta_header:
+            _log.debug("  Enabling beta header: %s", model.beta_header)
+            client_kwargs["default_headers"] = {"anthropic-beta": model.beta_header}
+        
+        self._client: anthropic.Anthropic = anthropic.Anthropic(**client_kwargs)
+        self._api: ClaudeApi = ClaudeApi(
+            self._client, model,
+            use_cache=use_cache,
+            max_retries=max_retries,
+        )
+        self._converter: PdfConverter = PdfConverter(
+            self._api, model,
+            system_prompt=system_prompt,
+        )
+
+    def _build_steps(self) -> list[ProcessingStep]:
+        """Build the processing step chain from configuration flags.
+
+        Returns:
+            Ordered list of processing steps to execute after merge.
+        """
+        steps: list[ProcessingStep] = [MergeContinuedTablesStep()]
+        if not self._no_images:
+            steps.append(ExtractImagesStep(
+                image_mode=self._image_mode,
+                render_dpi=self._image_dpi,
+            ))
+        if self._strip_ai_descriptions:
+            steps.append(StripAIDescriptionsStep())
+        if not self._no_format:
+            steps.append(FormatMarkdownStep())
+        steps.append(ValidateStep())
+        return steps
 
     # -- public API --------------------------------------------------------
 
@@ -331,133 +417,101 @@ class ConversionPipeline:
     def needs_conversion(
         self,
         force: bool = False,
-        model_id: str | None = None,
     ) -> bool:
         """Check if the PDF needs to be converted.
 
         Args:
             force: If True, always reconvert.
-            model_id: If provided, also check the cached manifest for model
-                staleness.  When the output file exists but was produced by a
-                different model, return ``True`` (needs reconversion).
         """
         if force or not self._output_file.exists():
             return True
         # Output exists -- check manifest for model staleness.
-        if model_id is not None:
-            manifest = self._work_dir.load_manifest()
-            if manifest is not None and manifest.model_id != model_id:
-                return True
-            # Missing/corrupt manifest: output file exists, no reason
-            # to force reconversion (user may have deleted .staging/).
+        manifest = self._work_dir.load_manifest()
+        if manifest is not None and manifest.model_id != self._model.model_id:
+            return True
+        # Missing/corrupt manifest: output file exists, no reason
+        # to force reconversion (user may have deleted .staging/).
         return False
 
-    def convert(
+    def run(
         self,
-        converter: PdfConverter,
         pages_per_chunk: int,
+        *,
         max_pages: int | None = None,
         force: bool = False,
+        from_step: str | None = None,
     ) -> PipelineResult:
-        """Run the full conversion pipeline for a single PDF.
+        """Run the conversion pipeline for a single PDF.
 
-        Steps:
+        This method provides a unified entry point that supports:
 
-        1. Create ``WorkDir`` from the stored output path.
-        2. If ``force``: invalidate all cached chunks.
-        3. Convert via :meth:`PdfConverter.convert` (chunked, with disk resume).
-        4. Merge chunks by page markers.
-        5. Run all processing steps (transforms, validation).
-        6. Write output file.
+        - Full API-based conversion (``from_step=None``)
+        - Re-running from cached chunks (``from_step="merge"``)
+        - Future: skipping to specific steps (``from_step="tables"`` etc.)
+
+        All arguments are always passed from the CLI. The pipeline decides
+        internally what to use based on ``from_step``.
+
+        Steps (``from_step=None``):
+
+        1. If ``force``: invalidate all cached chunks.
+        2. Convert via :meth:`PdfConverter.convert` (chunked, with disk resume).
+        3. Merge chunks by page markers.
+        4. Run all processing steps (transforms, validation).
+        5. Write output file.
+
+        Steps (``from_step="merge"``):
+
+        1. Load cached chunks from ``.staging/`` directory.
+        2. Merge chunks by page markers.
+        3. Run all processing steps (transforms, validation).
+        4. Write output file.
 
         Args:
-            converter: Configured PDF converter.
             pages_per_chunk: Pages per conversion chunk.
             max_pages: Optional page cap for debugging.
-            force: If True, discard cached chunks and reconvert.
+            force: If True, discard cached chunks and reconvert (ignored when
+                ``from_step`` is set).
+            from_step: Start from this step. ``None`` = full conversion,
+                ``"merge"`` = load chunks from disk (no API calls).
 
         Returns:
             :class:`PipelineResult` with stats, validation, and output path.
-        """
-        # 1. Force invalidation if requested.
-        if force:
-            self._work_dir.invalidate()
-
-        # 2. Convert (chunked, with disk resume).
-        result: ConversionResult = converter.convert(
-            self._pdf_path, self._work_dir, pages_per_chunk, max_pages=max_pages,
-        )
-
-        # 3–5. Merge, run steps, write.
-        parts = [cr.markdown for cr in result.chunks]
-        ctx, step_timings = self._process(parts)
-
-        return PipelineResult(
-            stats=result.stats,
-            output_file=self._output_file,
-            validation=ctx.validation,
-            cached_chunks=result.cached_chunks,
-            fresh_chunks=result.fresh_chunks,
-            step_timings=step_timings,
-        )
-
-    def remerge(self) -> PipelineResult:
-        """Re-run merge + steps + write from cached chunks on disk.
-
-        No API calls are made.  Useful for iterating on merge/post-processing
-        logic after a conversion has already populated the ``.staging/`` dir.
-
-        Returns:
-            :class:`PipelineResult` with validation results and output path.
 
         Raises:
-            RuntimeError: If the ``.staging/`` directory or manifest is missing.
+            ValueError: If ``from_step`` has an unsupported value.
+            RuntimeError: If ``from_step="merge"`` but staging directory is missing.
         """
-        if not self._work_dir.path.exists():
-            raise RuntimeError(
-                f"Staging directory not found: {self._work_dir.path}\n"
-                f"Run a full conversion first before using --remerge."
+        # Validate from_step early.
+        if from_step is not None and from_step != "merge":
+            raise ValueError(f"Unsupported --from step: {from_step!r}")
+
+        if from_step != "merge":
+            # Full API-based conversion.
+            if force:
+                self._work_dir.invalidate()
+
+            result: ConversionResult = self._converter.convert(
+                self._pdf_path, self._work_dir, pages_per_chunk, max_pages=max_pages,
             )
 
-        # 1. Discover chunk count and total pages from manifest.
-        num_chunks = self._work_dir.chunk_count()
-        total_pages = self._work_dir.total_pages()
-        _log.info(
-            "  Re-merging from %d cached chunks (%d pages)...",
-            num_chunks, total_pages,
-        )
+            parts = [cr.markdown for cr in result.chunks]
+            stats = result.stats
+            cached_chunks = result.cached_chunks
+            fresh_chunks = result.fresh_chunks
+        else:
+            # Re-merge from cached chunks (no API calls).
+            parts, stats, cached_chunks, fresh_chunks = self._load_chunks()
 
-        # 2. Verify all chunks exist and load markdown.
-        missing = [i for i in range(num_chunks) if not self._work_dir.has_chunk(i)]
-        if missing:
-            raise RuntimeError(
-                f"Missing chunks: {', '.join(str(i + 1) for i in missing)}. "
-                f"Run a full conversion first (without --remerge) to generate them."
-            )
-
-        parts = [self._work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
-
-        # 3–5. Merge, run steps, write.
+        # Common tail: merge, run steps, write, and return result.
         ctx, step_timings = self._process(parts)
-
-        # Load stats from cache if available (for display purposes).
-        stats = self._work_dir.load_stats()
-        if stats is None:
-            # Minimal stats when stats.json is missing.
-            stats = DocumentUsageStats(
-                doc_name=self._output_file.stem,
-                pages=0, chunks=num_chunks,
-                input_tokens=0, output_tokens=0,
-                cache_creation_tokens=0, cache_read_tokens=0,
-                cost=0.0, elapsed_seconds=0.0,
-            )
 
         return PipelineResult(
             stats=stats,
             output_file=self._output_file,
             validation=ctx.validation,
-            cached_chunks=num_chunks,
-            fresh_chunks=0,
+            cached_chunks=cached_chunks,
+            fresh_chunks=fresh_chunks,
             step_timings=step_timings,
         )
 
@@ -500,13 +554,58 @@ class ConversionPipeline:
             ctx.output_file, ctx.markdown.count("\n") + 1,
         )
 
+    def _load_chunks(self) -> tuple[list[str], DocumentUsageStats, int, int]:
+        """Load chunk markdown and stats from the work directory.
+        
+        Returns:
+            Tuple of (parts, stats, cached_chunks, fresh_chunks).
+            
+        Raises:
+            RuntimeError: If staging directory is missing or chunks are incomplete.
+        """
+        if not self._work_dir.path.exists():
+            raise RuntimeError(
+                f"Staging directory not found: {self._work_dir.path}\n"
+                f"Run a full conversion first before using --from merge."
+            )
+
+        num_chunks = self._work_dir.chunk_count()
+        total_pages = self._work_dir.total_pages()
+        _log.info(
+            "  Re-merging from %d cached chunks (%d pages)...",
+            num_chunks, total_pages,
+        )
+
+        missing = [i for i in range(num_chunks) if not self._work_dir.has_chunk(i)]
+        if missing:
+            raise RuntimeError(
+                f"Missing chunks: {', '.join(str(i + 1) for i in missing)}. "
+                f"Run a full conversion first (without --from merge) to generate them."
+            )
+
+        parts = [self._work_dir.load_chunk_markdown(i) for i in range(num_chunks)]
+
+        stats = self._work_dir.load_stats()
+        if stats is None:
+            # Minimal stats when stats.json is missing.
+            stats = DocumentUsageStats(
+                doc_name=self._output_file.stem,
+                pages=0, chunks=num_chunks,
+                input_tokens=0, output_tokens=0,
+                cache_creation_tokens=0, cache_read_tokens=0,
+                cost=0.0, elapsed_seconds=0.0,
+            )
+
+        return parts, stats, num_chunks, 0
+
     def _process(
         self,
         parts: list[str],
     ) -> tuple[ProcessingContext, dict[str, float]]:
         """Merge chunks, run all steps, and write the output file.
 
-        Shared logic between :meth:`convert` and :meth:`remerge`.
+        Shared by both code paths in :meth:`run` (full conversion
+        and re-merge from cached chunks).
 
         Args:
             parts: List of markdown strings from chunks.
