@@ -17,7 +17,24 @@ Requires Python 3.12+.
 pip install pdf2md-claude
 ```
 
-Or install from source:
+### macOS (Homebrew)
+
+Homebrew Python blocks system-wide `pip install` ([PEP 668](https://peps.python.org/pep-0668/)).
+Use `pipx` to install CLI tools into isolated environments:
+
+```bash
+brew install pipx
+pipx install pdf2md-claude
+```
+
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+brew install uv
+uv tool install pdf2md-claude
+```
+
+### Install from source
 
 ```bash
 pip install git+https://github.com/hacker-cb/pdf2md-claude.git
