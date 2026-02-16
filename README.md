@@ -72,7 +72,9 @@ Chunked conversion with context passing, deterministic merging, and validation:
 4. Merge continued tables across page boundaries (deterministic, no LLM)
 5. Regenerate complex tables with colspan/rowspan from PDF using AI (extended thinking)
 6. Extract and inject images from bounding-box markers (deterministic, no LLM)
-7. Validate output (page markers, tables, heading gaps, binary sequences, fabrication detection)
+7. Strip AI-generated image descriptions (optional, `--strip-ai-descriptions`)
+8. Format markdown: prettify HTML tables, normalize spacing (deterministic, no LLM)
+9. Validate output (page markers, tables, heading gaps, binary sequences, fabrication detection)
 
 ## CLI Commands
 
@@ -239,7 +241,7 @@ bash scripts/setup-dev.sh --force
 ### Running Tests
 
 ```bash
-pytest tests/ -v
+./.venv/bin/python -m pytest tests/ -v
 ```
 
 ### Debugging

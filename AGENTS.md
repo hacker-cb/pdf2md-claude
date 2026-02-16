@@ -41,7 +41,6 @@ Start from `cli.py` to understand the entry point, then `pipeline.py` for single
 - `pdf2md_claude/prompt.py` -- Claude prompts. References marker definitions from `markers.py` via f-strings. Uses `{{placeholder}}` for runtime `.format()` values.
 - `pdf2md_claude/rules.py` -- Custom rules file support. Parses user rules files (`@replace`, `@append`, `@add`, `@add after`), builds custom system prompts, and generates rules templates. Key types: `RulesFileResult`.
 - `pdf2md_claude/models.py` -- Model configs, pricing, `DocumentUsageStats`, cost calculation.
-- `pdf2md_claude/client.py` -- Anthropic API client setup.
 
 Tests: `tests/conftest.py`, `tests/test_claude_api.py`, `tests/test_cli.py`, `tests/test_converter.py`, `tests/test_formatter.py`, `tests/test_images.py`, `tests/test_markers.py`, `tests/test_models.py`, `tests/test_pipeline.py`, `tests/test_rules.py`, `tests/test_table_fixer.py`, `tests/test_table_merger.py`, `tests/test_validator.py`, `tests/test_workdir.py`.
 
@@ -63,16 +62,16 @@ End-to-end with sample PDF (requires `ANTHROPIC_API_KEY`):
 
 ```bash
 # Fresh conversion (4-page sample, 1 page/chunk = 4 API calls)
-./.venv/bin/python -m pdf2md_claude convert samples/multi_page_table.pdf --pages-per-chunk 1 -v -f
+./.venv/bin/python -m pdf2md_claude convert samples/tables/multi_page_table.pdf --pages-per-chunk 1 -v -f
 
 # Verify work directory was created
-ls samples/multi_page_table.staging/
+ls samples/tables/multi_page_table.staging/
 # Expected: manifest.json, merged.md at root
-ls samples/multi_page_table.staging/chunks/
+ls samples/tables/multi_page_table.staging/chunks/
 # Expected: stats.json, chunk_01..04 .md/_context.md/_meta.json
 
 # Resume test: run again without -f (should skip all 4 chunks)
-./.venv/bin/python -m pdf2md_claude convert samples/multi_page_table.pdf --pages-per-chunk 1 -v
+./.venv/bin/python -m pdf2md_claude convert samples/tables/multi_page_table.pdf --pages-per-chunk 1 -v
 ```
 
-The `samples/` directory contains `multi_page_table.pdf` (4 pages) for quick pipeline testing.
+The `samples/tables/` directory contains `multi_page_table.pdf` (4 pages) for quick pipeline testing.
