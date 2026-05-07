@@ -75,3 +75,22 @@ ls samples/tables/multi_page_table.staging/chunks/
 ```
 
 The `samples/tables/` directory contains `multi_page_table.pdf` (4 pages) for quick pipeline testing.
+
+## Release Process
+
+Releases publish to PyPI via `.github/workflows/publish.yml`, triggered by publishing a GitHub Release (the `release: published` event). A bare `v*` tag without a Release does NOT publish — this is intentional, so accidental tags can't ship to PyPI.
+
+Version is single-source: `pyproject.toml`. `pdf2md_claude/__init__.py` reads it via `importlib.metadata`, so there is no second place to update.
+
+To release `X.Y.Z`:
+
+1. Bump `version` in `pyproject.toml`, commit `chore: bump version to X.Y.Z` on `master`, push.
+2. Create the GitHub Release — this also creates the annotated tag and triggers the PyPI workflow:
+   ```bash
+   gh release create vX.Y.Z --target master --title "vX.Y.Z" --notes-file notes.md
+   ```
+3. Watch publish: `gh run watch` (or `gh run list --workflow publish.yml`).
+
+**Versioning** follows SemVer on the `0.x.y` line: minor bump for new features or visible behaviour changes, patch bump for bug fixes and docs-only changes.
+
+**Release notes** group commits since the previous release. Use the body of the v0.2.0 GitHub Release as the template — `## What's Changed (since vX.Y.Z)` followed by the subsections `### New Features`, `### Fixes`, `### Docs`, `### Notes for upgraders` (omit any that are empty). Each bullet leads with a short bold name and a user-facing one-sentence summary; don't copy commit subjects verbatim. The "Notes for upgraders" subsection must call out any change a user may need to act on (cache invalidation, CLI default change, breaking config rename, etc.).
