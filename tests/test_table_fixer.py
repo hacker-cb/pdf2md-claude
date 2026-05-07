@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from pdf2md_claude.models import OPUS_4_6, SONNET_4_5, HAIKU_4_5
+from pdf2md_claude.models import OPUS_4_6, OPUS_4_7, SONNET_4_5, HAIKU_4_5
 from pdf2md_claude.pipeline import ProcessingContext
 from pdf2md_claude.table_fixer import ComplexTable, FixTablesStep, fix_single_table, _build_thinking_config
 
@@ -740,6 +740,11 @@ class TestBuildThinkingConfig:
     def test_opus_4_6_uses_adaptive_thinking(self):
         """Opus 4.6 should use adaptive thinking."""
         config = _build_thinking_config(OPUS_4_6)
+        assert config == {"type": "adaptive"}
+
+    def test_opus_4_7_uses_adaptive_thinking(self):
+        """Opus 4.7 should use adaptive thinking."""
+        config = _build_thinking_config(OPUS_4_7)
         assert config == {"type": "adaptive"}
 
     def test_sonnet_4_5_uses_budget_thinking(self):

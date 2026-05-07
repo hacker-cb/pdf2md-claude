@@ -144,6 +144,24 @@ class DocumentUsageStats:
 # Models: https://platform.claude.com/docs/en/about-claude/models/overview#latest-models-comparison
 # Pricing: https://platform.claude.com/docs/en/about-claude/pricing#model-pricing
 # Long context: https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing
+OPUS_4_7 = ModelConfig(
+    model_id="claude-opus-4-7",
+    display_name="Claude Opus 4.7",
+    max_output_tokens=128_000,
+    max_context_tokens=1_000_000,
+    max_pdf_pages=100,
+    beta_header="context-1m-2025-08-07",
+    pricing=ModelPricing(
+        # Flat pricing across the full 1M context window.
+        input_per_mtok=5.0,       # $5 / MTok
+        output_per_mtok=25.0,     # $25 / MTok
+        long_ctx_input_per_mtok=5.0,    # flat — same as base
+        long_ctx_output_per_mtok=25.0,  # flat — same as base
+        long_ctx_threshold=200_000,
+    ),
+    supports_adaptive_thinking=True,
+)
+
 OPUS_4_6 = ModelConfig(
     model_id="claude-opus-4-6",
     display_name="Claude Opus 4.6",
@@ -196,7 +214,9 @@ HAIKU_4_5 = ModelConfig(
 )
 
 MODELS: dict[str, ModelConfig] = {
-    "opus": OPUS_4_6,
+    "opus": OPUS_4_7,        # default opus alias points to latest
+    "opus-4-7": OPUS_4_7,    # explicit pin
+    "opus-4-6": OPUS_4_6,    # explicit pin (older tokenizer)
     "sonnet": SONNET_4_5,
     "haiku": HAIKU_4_5,
 }
