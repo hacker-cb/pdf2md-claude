@@ -46,6 +46,33 @@ _log = logging.getLogger("pdf2md")
 DEFAULT_MODEL_ALIAS = "opus"
 """Short alias for the default model (key into ``MODELS`` dict)."""
 
+
+def _resolve_model(value: str) -> str:
+    """Validate ``--model`` value, accepting either an alias or a model ID.
+
+    Returns the canonical alias key into ``MODELS``. Raises
+    ``ArgumentTypeError`` with a helpful message listing available choices.
+    """
+    if value in MODELS:
+        return value
+    for alias, cfg in MODELS.items():
+        if cfg.model_id == value:
+            return alias
+    aliases = ", ".join(MODELS.keys())
+    raise argparse.ArgumentTypeError(
+        f"invalid model {value!r}; choose an alias ({aliases}) "
+        f"or a model ID (e.g. {next(iter(MODELS.values())).model_id})"
+    )
+
+
+def _model_help() -> str:
+    """Build ``--model`` help text listing each alias and its model ID."""
+    lines = "; ".join(f"{a} -> {c.model_id}" for a, c in MODELS.items())
+    return (
+        "Claude model alias or full model ID (default: %(default)s). "
+        f"Available: {lines}."
+    )
+
 DEFAULT_IMAGE_DPI = 600
 """Default DPI for page-region image rendering."""
 
@@ -297,9 +324,10 @@ Examples:
     )
     p_convert.add_argument(
         "--model",
-        choices=list(MODELS.keys()),
+        type=_resolve_model,
         default=DEFAULT_MODEL_ALIAS,
-        help="Claude model to use (default: %(default)s).",
+        metavar="MODEL",
+        help=_model_help(),
     )
     p_convert.add_argument(
         "--pages-per-chunk",
