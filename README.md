@@ -112,9 +112,12 @@ pdf2md-claude init-rules [PATH]             Generate a rules template
   -v, --verbose          Enable verbose logging
   -f, --force            Force reconversion even if output exists
   --model MODEL          Claude model alias or full model ID (default: opus).
-                         Aliases: opus → claude-opus-4-7, opus-4-7, opus-4-6,
-                         sonnet → claude-sonnet-4-5, haiku → claude-haiku-4-5.
-                         Full model IDs also accepted, e.g. --model claude-opus-4-7.
+                         Aliases:
+                             opus, opus-4-7 → claude-opus-4-7
+                             opus-4-6       → claude-opus-4-6
+                             sonnet         → claude-sonnet-4-5
+                             haiku          → claude-haiku-4-5
+                         Run `pdf2md-claude convert --help` for the canonical list.
   --max-pages N          Convert only first N pages (useful for debugging)
   --cache                Enable prompt caching (1h TTL, reduces re-run cost)
   --pages-per-chunk N    Pages per conversion chunk (default: 10)
