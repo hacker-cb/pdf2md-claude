@@ -4,7 +4,7 @@ References:
   - Models overview: https://platform.claude.com/docs/en/about-claude/models/overview#latest-models-comparison
   - Model pricing:   https://platform.claude.com/docs/en/about-claude/pricing#model-pricing
   - Long context:    https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing
-Last verified: 2026-02-08
+Last verified: 2026-05-07
 """
 
 from __future__ import annotations
@@ -152,10 +152,12 @@ OPUS_4_6 = ModelConfig(
     max_pdf_pages=100,
     beta_header="context-1m-2025-08-07",
     pricing=ModelPricing(
+        # Flat pricing across the full 1M context window — Opus 4.6 is on the
+        # current "standard pricing across 1M" list, no premium tier.
         input_per_mtok=5.0,       # $5 / MTok
         output_per_mtok=25.0,     # $25 / MTok
-        long_ctx_input_per_mtok=10.0,   # $10 / MTok (>200K input)
-        long_ctx_output_per_mtok=37.5,  # $37.50 / MTok (>200K input)
+        long_ctx_input_per_mtok=5.0,    # flat — same as base
+        long_ctx_output_per_mtok=25.0,  # flat — same as base
         long_ctx_threshold=200_000,
     ),
     supports_adaptive_thinking=True,
