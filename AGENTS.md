@@ -84,12 +84,20 @@ Version is single-source: `pyproject.toml`. `pdf2md_claude/__init__.py` reads it
 
 To release `X.Y.Z`:
 
-1. Bump `version` in `pyproject.toml`, commit `chore: bump version to X.Y.Z` on `master`, push.
+1. Prepare the bump:
+   - Edit `version` in `pyproject.toml`.
+   - Refresh local metadata: `./.venv/bin/pip install -e .`. Without this step `pdf2md_claude.__version__` still reports the old value because the package reads its version via `importlib.metadata`.
+   - Sanity-check: `./.venv/bin/python -m pdf2md_claude --version` should print the new version, and `./.venv/bin/python -m pytest tests/ -q` should pass.
+   - Commit `chore: bump version to X.Y.Z` on `master`, push.
 2. Create the GitHub Release — this also creates the annotated tag and triggers the PyPI workflow:
    ```bash
    gh release create vX.Y.Z --target master --title "vX.Y.Z" --notes-file notes.md
    ```
-3. Watch publish: `gh run watch` (or `gh run list --workflow publish.yml`).
+3. Watch the publish run, then confirm it landed on PyPI:
+   ```bash
+   gh run watch        # or: gh run list --workflow publish.yml
+   pip index versions pdf2md-claude  # the new version should appear in the list
+   ```
 
 **Versioning** follows SemVer on the `0.x.y` line: minor bump for new features or visible behaviour changes, patch bump for bug fixes and docs-only changes.
 
