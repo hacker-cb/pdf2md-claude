@@ -40,6 +40,27 @@ uv tool install pdf2md-claude
 pip install git+https://github.com/hacker-cb/pdf2md-claude.git
 ```
 
+### Upgrading
+
+Use the upgrade command matching the way you installed:
+
+```bash
+pip install --upgrade pdf2md-claude                                    # pip
+pipx upgrade pdf2md-claude                                             # pipx
+uv tool upgrade pdf2md-claude                                          # uv
+pip install --upgrade git+https://github.com/hacker-cb/pdf2md-claude.git  # from source
+```
+
+Verify with:
+
+```bash
+pdf2md-claude --version
+```
+
+See the [latest release notes](https://github.com/hacker-cb/pdf2md-claude/releases/latest)
+for behaviour changes between versions — in particular, default model bumps may
+affect cost and invalidate cached chunks under `.staging/`.
+
 ## Quick Start
 
 ```bash
