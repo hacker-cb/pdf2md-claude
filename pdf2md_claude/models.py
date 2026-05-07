@@ -144,10 +144,12 @@ class DocumentUsageStats:
 # Models: https://platform.claude.com/docs/en/about-claude/models/overview#latest-models-comparison
 # Pricing: https://platform.claude.com/docs/en/about-claude/pricing#model-pricing
 # Long context: https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing
+# Note: Opus 4.6/4.7 and Sonnet 4.6 are billed at flat (base) rates across the
+# full 1M context window; only Sonnet 4.5 retains the >200K long-context premium.
 OPUS_4_7 = ModelConfig(
     model_id="claude-opus-4-7",
     display_name="Claude Opus 4.7",
-    max_output_tokens=128_000,
+    max_output_tokens=128_000,  # per models overview; Batch API supports up to 300K via beta header
     max_context_tokens=1_000_000,
     max_pdf_pages=100,
     beta_header="context-1m-2025-08-07",

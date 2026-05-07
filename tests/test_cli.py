@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from pdf2md_claude.cli import _build_parser, main
+import argparse
+
+from pdf2md_claude.cli import _build_parser, _resolve_model, main
+from pdf2md_claude.models import MODELS
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +143,47 @@ class TestConvertArgs:
         assert "post-processing" in help_text_lower, "Help text should mention 'post-processing'"
         # Should mention table fixing as an example of post-processing that calls API
         assert "table" in help_text_lower, "Help text should mention table fixing as example"
+
+
+class TestResolveModel:
+    """``--model`` accepts both an alias and a full model_id."""
+
+    def test_alias_passthrough(self):
+        assert _resolve_model("opus") == "opus"
+        assert _resolve_model("sonnet") == "sonnet"
+        assert _resolve_model("haiku") == "haiku"
+
+    def test_explicit_pin_aliases(self):
+        assert _resolve_model("opus-4-7") == "opus-4-7"
+        assert _resolve_model("opus-4-6") == "opus-4-6"
+
+    def test_model_id_resolves_to_alias(self):
+        # The alias chosen for a model_id is the first MODELS entry whose
+        # config matches; both "opus" and "opus-4-7" share OPUS_4_7, so
+        # claude-opus-4-7 maps to "opus".
+        assert _resolve_model("claude-opus-4-7") == "opus"
+        assert _resolve_model("claude-opus-4-6") == "opus-4-6"
+
+    def test_resolved_alias_points_to_expected_model_id(self):
+        for input_value, expected_model_id in [
+            ("opus", "claude-opus-4-7"),
+            ("opus-4-7", "claude-opus-4-7"),
+            ("claude-opus-4-7", "claude-opus-4-7"),
+            ("opus-4-6", "claude-opus-4-6"),
+            ("claude-opus-4-6", "claude-opus-4-6"),
+        ]:
+            alias = _resolve_model(input_value)
+            assert MODELS[alias].model_id == expected_model_id
+
+    def test_invalid_value_raises_with_helpful_message(self):
+        with pytest.raises(argparse.ArgumentTypeError) as exc_info:
+            _resolve_model("bogus")
+        msg = str(exc_info.value)
+        assert "bogus" in msg
+        assert "alias" in msg
+        assert "model ID" in msg
+        # Aliases listed in error help users discover the valid choices.
+        assert "opus" in msg
 
 
 # ---------------------------------------------------------------------------
