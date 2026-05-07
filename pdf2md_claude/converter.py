@@ -73,7 +73,13 @@ def extract_pdf_pages(pdf_path: Path, page_start: int, page_end: int) -> str:
         end_idx = min(total_pages, page_end)
 
         doc.select(list(range(start_idx, end_idx)))
-        pdf_bytes = doc.tobytes()
+        # garbage=3 is required: select() only updates the page tree, leaving
+        # orphaned objects from unselected pages (fonts, ICC profiles, content
+        # streams) in the output. Without GC, a sub-PDF of a large document
+        # can match or exceed the original, causing 413 errors from Anthropic's
+        # 32 MB request limit. deflate=True compresses any uncompressed streams
+        # (no-op if already compressed). Both are visually lossless.
+        pdf_bytes = doc.tobytes(garbage=3, deflate=True)
 
         actual_pages = end_idx - start_idx
         _log.debug(
