@@ -36,7 +36,8 @@ from typing import Protocol, runtime_checkable
 
 import anthropic
 
-from pdf2md_claude.claude_api import ClaudeApi
+from pdf2md_claude.claude_api import ApiClient, ClaudeApi
+from pdf2md_claude.claude_cli_api import ClaudeCliApi
 from pdf2md_claude.converter import ConversionResult, PdfConverter
 from pdf2md_claude.formatter import FormatMarkdownStep
 from pdf2md_claude.images import ImageExtractor, ImageMode
@@ -95,7 +96,7 @@ class ProcessingContext:
     output_file: Path
     """Target path for the output Markdown file."""
 
-    api: ClaudeApi | None = None
+    api: ApiClient | None = None
     """Claude API client for AI-based steps (``None`` in test contexts)."""
 
     work_dir: WorkDir | None = None
@@ -318,7 +319,7 @@ class ConversionPipeline:
         pdf_path: Path,
         output_file: Path,
         *,
-        api_key: str,
+        api_key: str | None = None,
         model: ModelConfig,
         use_cache: bool = False,
         max_retries: int = 10,
@@ -329,12 +330,13 @@ class ConversionPipeline:
         strip_ai_descriptions: bool = False,
         no_format: bool = False,
         no_fix_tables: bool = False,
+        use_claude_cli: bool = False,
     ) -> None:
         self._pdf_path = pdf_path
         self._output_file = output_file
         self._work_dir = WorkDir(output_file.with_suffix(".staging"))
         self._model = model
-        
+
         # Step configuration
         self._image_mode = image_mode
         self._image_dpi = image_dpi
@@ -342,19 +344,14 @@ class ConversionPipeline:
         self._strip_ai_descriptions = strip_ai_descriptions
         self._no_format = no_format
         self._no_fix_tables = no_fix_tables
-        
+
         # Build step chain
         self._steps = self._build_steps()
-        
-        # Create API objects
-        client_kwargs: dict = {"api_key": api_key}
-        if model.beta_header:
-            _log.debug("  Enabling beta header: %s", model.beta_header)
-            client_kwargs["default_headers"] = {"anthropic-beta": model.beta_header}
-        
-        self._client: anthropic.Anthropic = anthropic.Anthropic(**client_kwargs)
-        self._api: ClaudeApi = ClaudeApi(
-            self._client, model,
+
+        self._client, self._api = self._make_api(
+            model,
+            api_key=api_key,
+            use_claude_cli=use_claude_cli,
             use_cache=use_cache,
             max_retries=max_retries,
         )
@@ -362,6 +359,28 @@ class ConversionPipeline:
             self._api, model,
             system_prompt=system_prompt,
         )
+
+    @staticmethod
+    def _make_api(
+        model: ModelConfig,
+        *,
+        api_key: str | None,
+        use_claude_cli: bool,
+        use_cache: bool,
+        max_retries: int,
+    ) -> tuple[anthropic.Anthropic | None, ApiClient]:
+        """Build the API backend: the direct Anthropic SDK client, or a wrapper
+        that shells out to the ``claude`` CLI (subscription auth, no API key)."""
+        if use_claude_cli:
+            return None, ClaudeCliApi(model, max_retries=max_retries, use_cache=use_cache)
+        if not api_key:
+            raise ValueError("api_key is required unless use_claude_cli=True")
+        client_kwargs: dict = {"api_key": api_key}
+        if model.beta_header:
+            _log.debug("  Enabling beta header: %s", model.beta_header)
+            client_kwargs["default_headers"] = {"anthropic-beta": model.beta_header}
+        client = anthropic.Anthropic(**client_kwargs)
+        return client, ClaudeApi(client, model, use_cache=use_cache, max_retries=max_retries)
 
     def _build_steps(self) -> list[ProcessingStep]:
         """Build the processing step chain from configuration flags.

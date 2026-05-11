@@ -67,6 +67,11 @@ affect cost and invalidate cached chunks under `.staging/`.
 # Set API key
 export ANTHROPIC_API_KEY="your-key-here"
 
+# ...or skip the key and route through your local `claude` login instead:
+#   pdf2md-claude convert document.pdf --via-claude-cli
+# (auto-enabled when ANTHROPIC_API_KEY is unset and `claude` is on PATH —
+#  see "Backends" below)
+
 # Convert a single PDF (output: document.md next to the PDF)
 pdf2md-claude convert document.pdf
 
@@ -144,6 +149,11 @@ pdf2md-claude init-rules [PATH]             Generate a rules template
   --pages-per-chunk N    Pages per conversion chunk (default: 10)
   --retries N            Max retries per chunk on transient errors (default: 10)
   --rules FILE           Custom rules file (replace/append/add rules)
+  --via-claude-cli       Run conversion through the local `claude` CLI (`claude -p`)
+                         instead of the Anthropic API — uses your Claude Code
+                         login (e.g. a subscription), no ANTHROPIC_API_KEY needed.
+                         Auto-enabled when ANTHROPIC_API_KEY is unset and `claude`
+                         is on PATH. `--cache` is a no-op in this mode.
   --no-images            Skip image extraction from bounding-box markers
   --image-mode MODE      Image extraction mode (auto/snap/bbox/debug)
   --image-dpi DPI        DPI for page-region rendering (default: 600)
@@ -212,11 +222,34 @@ The source document is in Chinese. Translate all content to English.
 
 Use `--show-prompt` to inspect the final merged prompt before converting.
 
+## Backends
+
+`convert` can reach Claude two ways:
+
+| Backend | When used | Auth |
+|---|---|---|
+| Anthropic API (default) | `ANTHROPIC_API_KEY` is set | API key (`x-api-key`) |
+| `claude` CLI (`claude -p`) | `--via-claude-cli`, or auto when no API key and `claude` is on PATH | Whatever `claude` is logged in with (e.g. a Claude subscription) |
+
+The CLI backend shells out to a locally installed
+[Claude Code](https://claude.com/claude-code) CLI in headless mode, feeding the
+PDF chunks to it over `--input-format stream-json` (the CLI forwards the
+`document` blocks straight to the Messages API, so output quality matches the
+direct path). Differences to note:
+
+- `--cache` has no effect — Claude Code manages prompt caching itself.
+- Beta headers (e.g. the 1M-context window) are not forwarded.
+- `max_tokens` follows Claude Code's per-model default, not pdf2md's.
+- Token counts in the cost report come from the CLI; on a document's first
+  call most input tokens show up as cache-creation tokens.
+- Override the executable with `PDF2MD_CLAUDE_BIN` if `claude` isn't on PATH.
+
 ## Environment
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key (required) |
+| `ANTHROPIC_API_KEY` | Anthropic API key. Required unless using the `claude` CLI backend (`--via-claude-cli`). |
+| `PDF2MD_CLAUDE_BIN` | Name/path of the `claude` executable for the CLI backend (default: `claude`). |
 
 ## File Structure
 
@@ -226,6 +259,7 @@ pdf2md-claude/
 │   ├── __init__.py             # Package version export
 │   ├── __main__.py             # python -m pdf2md_claude entry point
 │   ├── claude_api.py           # Claude API client wrapper with retry and streaming
+│   ├── claude_cli_api.py       # Alternative backend: runs `claude -p` (subscription auth)
 │   ├── cli.py                  # CLI argument parsing and orchestration
 │   ├── converter.py            # Core PDF→Markdown conversion logic
 │   ├── formatter.py            # Markdown and HTML table formatter
@@ -243,6 +277,7 @@ pdf2md-claude/
 │   ├── __init__.py
 │   ├── conftest.py             # Shared test fixtures
 │   ├── test_claude_api.py
+│   ├── test_claude_cli_api.py
 │   ├── test_cli.py
 │   ├── test_converter.py
 │   ├── test_formatter.py

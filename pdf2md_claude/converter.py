@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pymupdf
 
-from pdf2md_claude.claude_api import ApiResponse, ClaudeApi
+from pdf2md_claude.claude_api import ApiClient, ApiResponse
 from pdf2md_claude.markers import PAGE_BEGIN, PAGE_END
 from pdf2md_claude.models import ModelConfig, DocumentUsageStats, calculate_cost, fmt_duration
 from pdf2md_claude.workdir import ChunkUsageStats, WorkDir
@@ -313,7 +313,7 @@ class PdfConverter:
 
     def __init__(
         self,
-        api: ClaudeApi,
+        api: ApiClient,
         model: ModelConfig,
         system_prompt: str | None = None,
     ) -> None:

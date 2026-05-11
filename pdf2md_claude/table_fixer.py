@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pdf2md_claude.claude_api import ClaudeApi, ApiResponse
+from pdf2md_claude.claude_api import ApiClient, ApiResponse
 from pdf2md_claude.converter import extract_pdf_pages
 from pdf2md_claude.markers import TABLE_BLOCK_RE
 from pdf2md_claude.models import ModelConfig, calculate_cost
@@ -177,7 +177,7 @@ def _build_thinking_config(model: ModelConfig) -> dict:
 
 
 def fix_single_table(
-    api: ClaudeApi,
+    api: ApiClient,
     pdf_path: Path,
     table: ComplexTable,
     markdown: str,

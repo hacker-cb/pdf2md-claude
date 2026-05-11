@@ -1056,3 +1056,48 @@ class TestRunFromStepValidation:
                 assert result is not None
                 mock_converter.convert.assert_called_once()
                 mock_anthropic_class.assert_called_once_with(api_key="test-key")
+
+
+# ---------------------------------------------------------------------------
+# Backend selection (Anthropic SDK vs. claude CLI)
+# ---------------------------------------------------------------------------
+
+
+class TestBackendSelection:
+    """Tests for ConversionPipeline's API backend wiring."""
+
+    def test_default_uses_anthropic_sdk(self, tmp_path: Path):
+        """Without use_claude_cli, the Anthropic SDK client is created."""
+        from unittest.mock import patch
+
+        with patch("pdf2md_claude.pipeline.anthropic.Anthropic") as mock_anthropic:
+            pipeline = ConversionPipeline(
+                _DUMMY_PDF, tmp_path / "doc.md",
+                api_key="test-key", model=MODELS["sonnet"],
+            )
+        mock_anthropic.assert_called_once()
+        from pdf2md_claude.claude_api import ClaudeApi
+        assert isinstance(pipeline._api, ClaudeApi)
+
+    def test_use_claude_cli_skips_sdk(self, tmp_path: Path):
+        """With use_claude_cli, no SDK client is created and ClaudeCliApi is used."""
+        from unittest.mock import patch
+
+        from pdf2md_claude.claude_cli_api import ClaudeCliApi
+
+        with patch("pdf2md_claude.pipeline.anthropic.Anthropic") as mock_anthropic, \
+             patch("pdf2md_claude.claude_cli_api.claude_cli_available", return_value=True):
+            pipeline = ConversionPipeline(
+                _DUMMY_PDF, tmp_path / "doc.md",
+                model=MODELS["sonnet"], use_claude_cli=True,
+            )
+        mock_anthropic.assert_not_called()
+        assert pipeline._client is None
+        assert isinstance(pipeline._api, ClaudeCliApi)
+
+    def test_missing_api_key_without_cli_raises(self, tmp_path: Path):
+        """Constructing without an api key and without use_claude_cli is an error."""
+        with pytest.raises(ValueError, match="api_key is required"):
+            ConversionPipeline(
+                _DUMMY_PDF, tmp_path / "doc.md", model=MODELS["sonnet"],
+            )

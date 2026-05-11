@@ -27,6 +27,7 @@ import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
+from pdf2md_claude.claude_cli_api import claude_cli_available
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
@@ -373,6 +374,17 @@ Examples:
              "Use -f to reconvert after changing rules.",
     )
     p_convert.add_argument(
+        "--via-claude-cli",
+        action="store_true",
+        help="Run conversion through the local 'claude' CLI in headless mode "
+             "(claude -p) instead of calling the Anthropic API directly. "
+             "Uses whatever credentials 'claude' is logged in with (e.g. a "
+             "Claude subscription), so ANTHROPIC_API_KEY is not required. "
+             "Auto-enabled when ANTHROPIC_API_KEY is unset and 'claude' is on "
+             "PATH. Note: --cache is a no-op in this mode (Claude Code manages "
+             "prompt caching itself).",
+    )
+    p_convert.add_argument(
         "--from",
         dest="from_step",
         choices=["merge"],
@@ -657,7 +669,7 @@ def _convert_one_document(
     *,
     output_dir: Path | None,
     model: ModelConfig,
-    api_key: str,
+    api_key: str | None,
     pages_per_chunk: int,
     max_pages: int | None,
     force: bool,
@@ -670,6 +682,7 @@ def _convert_one_document(
     strip_ai_descriptions: bool,
     no_format: bool,
     no_fix_tables: bool,
+    use_claude_cli: bool = False,
     from_step: str | None = None,
 ) -> _DocConvertResult:
     """Convert a single PDF: check staleness, run pipeline.
@@ -696,6 +709,7 @@ def _convert_one_document(
             strip_ai_descriptions=strip_ai_descriptions,
             no_format=no_format,
             no_fix_tables=no_fix_tables,
+            use_claude_cli=use_claude_cli,
         )
 
         if not pipeline.needs_conversion(force=force or bool(from_step)):
@@ -852,19 +866,43 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         )
         if args.from_step:
             _log.info("Starting from: %s (skips chunk conversion; post-processing may still call API)", args.from_step)
-        if args.cache:
-            _log.info("Prompt caching: ENABLED (1h TTL)")
+
+        # Decide backend: direct Anthropic API (needs ANTHROPIC_API_KEY) or
+        # the local `claude` CLI (subscription auth). The CLI is used when
+        # explicitly requested, or auto-selected when no API key is available
+        # but `claude` is installed.
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        use_claude_cli = args.via_claude_cli
+        if not use_claude_cli and not api_key:
+            if claude_cli_available():
+                _log.info(
+                    "ANTHROPIC_API_KEY not set; routing through the local "
+                    "'claude' CLI (subscription auth). Use --via-claude-cli to "
+                    "force this, or set ANTHROPIC_API_KEY to call the API directly."
+                )
+                use_claude_cli = True
+            else:
+                _log.error(
+                    "No backend available: set ANTHROPIC_API_KEY, or install "
+                    "the 'claude' CLI and use --via-claude-cli."
+                )
+                return 1
+        if use_claude_cli:
+            if not claude_cli_available():
+                _log.error("--via-claude-cli requested but the 'claude' CLI was not found on PATH")
+                return 1
+            _log.info("Backend: claude CLI (headless 'claude -p')")
+            if args.cache:
+                _log.info("Note: --cache has no effect with the claude CLI backend")
+        else:
+            _log.info("Backend: Anthropic API (ANTHROPIC_API_KEY)")
+            if args.cache:
+                _log.info("Prompt caching: ENABLED (1h TTL)")
 
         if output_dir:
             _log.info("Output directory: %s", output_dir)
         else:
             _log.info("Output: next to each PDF")
-
-        # API key validation (always performed).
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            _log.error("ANTHROPIC_API_KEY environment variable not set")
-            return 1
 
         # Ensure output directory exists (if explicitly set).
         if output_dir:
@@ -920,6 +958,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                         strip_ai_descriptions=args.strip_ai_descriptions,
                         no_format=args.no_format,
                         no_fix_tables=args.no_fix_tables,
+                        use_claude_cli=use_claude_cli,
                         from_step=args.from_step,
                     ): pdf_path
                     for pdf_path in pdf_paths
@@ -954,6 +993,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                     strip_ai_descriptions=args.strip_ai_descriptions,
                     no_format=args.no_format,
                     no_fix_tables=args.no_fix_tables,
+                    use_claude_cli=use_claude_cli,
                     from_step=args.from_step,
                 )
                 if result.stats is not None:
