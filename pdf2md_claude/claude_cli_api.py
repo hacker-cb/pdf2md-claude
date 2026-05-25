@@ -333,8 +333,8 @@ class ClaudeCliApi:
                     raise RuntimeError(str(exc)) from exc
                 delay = _backoff_delay(attempt)
                 _log.warning(
-                    "claude CLI call%s: %s (attempt %d/%d, retrying in %.0fs)",
-                    context_str, exc, attempt, self._max_retries, delay,
+                    "claude CLI %s (attempt %d/%d, retrying in %.0fs)",
+                    exc, attempt, self._max_retries, delay,
                 )
                 time.sleep(delay)
 

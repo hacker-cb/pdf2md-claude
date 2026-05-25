@@ -62,8 +62,10 @@ class _FakeProc:
 
 
 def _api() -> ClaudeCliApi:
+    # Pass claude_bin explicitly so tests stay hermetic regardless of any
+    # PDF2MD_CLAUDE_BIN value in the developer's environment.
     with patch("pdf2md_claude.claude_cli_api.claude_cli_available", return_value=True):
-        return ClaudeCliApi(OPUS_4_7, max_retries=3)
+        return ClaudeCliApi(OPUS_4_7, claude_bin="claude", max_retries=3)
 
 
 _DUMMY_MESSAGES = [{"role": "user", "content": [
