@@ -67,10 +67,9 @@ affect cost and invalidate cached chunks under `.staging/`.
 # Set API key
 export ANTHROPIC_API_KEY="your-key-here"
 
-# ...or skip the key and route through your local `claude` login instead:
+# ...or skip the key and route through your local `claude` login instead
+# (subscription auth via Claude Code — see "Backends" below):
 #   pdf2md-claude convert document.pdf --via-claude-cli
-# (auto-enabled when ANTHROPIC_API_KEY is unset and `claude` is on PATH —
-#  see "Backends" below)
 
 # Convert a single PDF (output: document.md next to the PDF)
 pdf2md-claude convert document.pdf
@@ -152,8 +151,8 @@ pdf2md-claude init-rules [PATH]             Generate a rules template
   --via-claude-cli       Run conversion through the local `claude` CLI (`claude -p`)
                          instead of the Anthropic API — uses your Claude Code
                          login (e.g. a subscription), no ANTHROPIC_API_KEY needed.
-                         Auto-enabled when ANTHROPIC_API_KEY is unset and `claude`
-                         is on PATH. `--cache` is a no-op in this mode.
+                         Opt-in only (must be passed explicitly); `--cache` is a
+                         no-op in this mode.
   --no-images            Skip image extraction from bounding-box markers
   --image-mode MODE      Image extraction mode (auto/snap/bbox/debug)
   --image-dpi DPI        DPI for page-region rendering (default: 600)
@@ -229,7 +228,7 @@ Use `--show-prompt` to inspect the final merged prompt before converting.
 | Backend | When used | Auth |
 |---|---|---|
 | Anthropic API (default) | `ANTHROPIC_API_KEY` is set | API key (`x-api-key`) |
-| `claude` CLI (`claude -p`) | `--via-claude-cli`, or auto when no API key and `claude` is on PATH | Whatever `claude` is logged in with (e.g. a Claude subscription) |
+| `claude` CLI (`claude -p`) | `--via-claude-cli` passed explicitly (no silent auto-fallback) | Whatever `claude` is logged in with (e.g. a Claude subscription) |
 
 The CLI backend shells out to a locally installed
 [Claude Code](https://claude.com/claude-code) CLI in headless mode, feeding the

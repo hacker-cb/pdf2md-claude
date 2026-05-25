@@ -56,14 +56,14 @@ _RETRYABLE_API_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
 """HTTP statuses (as reported in the CLI ``result`` event) worth retrying."""
 
 
-def _resolve_claude_bin(claude_bin: str | None) -> str:
+def resolve_claude_bin(claude_bin: str | None) -> str:
     """Resolve the Claude executable: explicit arg, then env var, then ``claude``."""
     return claude_bin or os.environ.get(_CLAUDE_BIN_ENV) or "claude"
 
 
 def claude_cli_available(claude_bin: str | None = None) -> bool:
     """Return ``True`` if the Claude Code CLI looks usable on this machine."""
-    return shutil.which(_resolve_claude_bin(claude_bin)) is not None
+    return shutil.which(resolve_claude_bin(claude_bin)) is not None
 
 
 def _strip_cache_control(content: object) -> object:
@@ -115,7 +115,7 @@ class ClaudeCliApi:
                 manages prompt caching itself). A warning is logged if set.
         """
         self._model = model
-        self._claude_bin = _resolve_claude_bin(claude_bin)
+        self._claude_bin = resolve_claude_bin(claude_bin)
         self._max_retries = max(1, max_retries)
         self._timeout_s = timeout_s
         if use_cache:
