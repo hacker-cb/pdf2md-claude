@@ -27,7 +27,7 @@ import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
-from pdf2md_claude.claude_cli_api import claude_cli_available
+from pdf2md_claude.claude_cli_api import claude_cli_available, resolve_claude_bin
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
@@ -872,22 +872,31 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         # typo in ANTHROPIC_API_KEY can't accidentally drain a subscription quota.
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         use_claude_cli = args.via_claude_cli
+        claude_bin = resolve_claude_bin(None)  # honours PDF2MD_CLAUDE_BIN
         if not use_claude_cli and not api_key:
             if claude_cli_available():
                 _log.error(
                     "ANTHROPIC_API_KEY not set. Set it to call the Anthropic API, "
-                    "or pass --via-claude-cli to route through the local 'claude' "
-                    "CLI (subscription auth)."
+                    "or pass --via-claude-cli to route through the local %r "
+                    "(subscription auth).",
+                    claude_bin,
                 )
             else:
                 _log.error(
-                    "ANTHROPIC_API_KEY not set and 'claude' CLI not found on PATH. "
-                    "Set ANTHROPIC_API_KEY, or install Claude Code and pass --via-claude-cli."
+                    "ANTHROPIC_API_KEY not set and %r was not found on PATH. "
+                    "Set ANTHROPIC_API_KEY, or install Claude Code (and set "
+                    "PDF2MD_CLAUDE_BIN if your executable has a non-default "
+                    "name/path) and pass --via-claude-cli.",
+                    claude_bin,
                 )
             return 1
         if use_claude_cli:
             if not claude_cli_available():
-                _log.error("--via-claude-cli requested but the 'claude' CLI was not found on PATH")
+                _log.error(
+                    "--via-claude-cli requested but %r was not found on PATH "
+                    "(override via PDF2MD_CLAUDE_BIN)",
+                    claude_bin,
+                )
                 return 1
             _log.info("Backend: claude CLI (headless 'claude -p')")
             if args.cache:

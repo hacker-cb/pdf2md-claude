@@ -8,7 +8,7 @@ import pytest
 
 from pdf2md_claude.claude_cli_api import (
     ClaudeCliApi,
-    _resolve_claude_bin,
+    resolve_claude_bin,
     _strip_cache_control,
     claude_cli_available,
 )
@@ -127,11 +127,11 @@ class TestConstruction:
 
     def test_resolve_claude_bin_precedence(self, monkeypatch):
         monkeypatch.delenv("PDF2MD_CLAUDE_BIN", raising=False)
-        assert _resolve_claude_bin(None) == "claude"
-        assert _resolve_claude_bin("/x/claude") == "/x/claude"
+        assert resolve_claude_bin(None) == "claude"
+        assert resolve_claude_bin("/x/claude") == "/x/claude"
         monkeypatch.setenv("PDF2MD_CLAUDE_BIN", "/opt/claude")
-        assert _resolve_claude_bin(None) == "/opt/claude"
-        assert _resolve_claude_bin("/x/claude") == "/x/claude"  # explicit arg wins over env
+        assert resolve_claude_bin(None) == "/opt/claude"
+        assert resolve_claude_bin("/x/claude") == "/x/claude"  # explicit arg wins over env
 
 
 # ---------------------------------------------------------------------------
