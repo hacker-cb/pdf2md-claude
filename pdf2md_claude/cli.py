@@ -380,8 +380,7 @@ Examples:
              "(claude -p) instead of calling the Anthropic API directly. "
              "Uses whatever credentials 'claude' is logged in with (e.g. a "
              "Claude subscription), so ANTHROPIC_API_KEY is not required. "
-             "Auto-enabled when ANTHROPIC_API_KEY is unset and 'claude' is on "
-             "PATH. Note: --cache is a no-op in this mode (Claude Code manages "
+             "Note: --cache is a no-op in this mode (Claude Code manages "
              "prompt caching itself).",
     )
     p_convert.add_argument(
@@ -868,25 +867,24 @@ def _cmd_convert(args: argparse.Namespace) -> int:
             _log.info("Starting from: %s (skips chunk conversion; post-processing may still call API)", args.from_step)
 
         # Decide backend: direct Anthropic API (needs ANTHROPIC_API_KEY) or
-        # the local `claude` CLI (subscription auth). The CLI is used when
-        # explicitly requested, or auto-selected when no API key is available
-        # but `claude` is installed.
+        # the local `claude` CLI (subscription auth, opt-in via --via-claude-cli).
+        # Selection is always explicit — there is no silent auto-fallback, so a
+        # typo in ANTHROPIC_API_KEY can't accidentally drain a subscription quota.
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         use_claude_cli = args.via_claude_cli
         if not use_claude_cli and not api_key:
             if claude_cli_available():
-                _log.info(
-                    "ANTHROPIC_API_KEY not set; routing through the local "
-                    "'claude' CLI (subscription auth). Use --via-claude-cli to "
-                    "force this, or set ANTHROPIC_API_KEY to call the API directly."
+                _log.error(
+                    "ANTHROPIC_API_KEY not set. Set it to call the Anthropic API, "
+                    "or pass --via-claude-cli to route through the local 'claude' "
+                    "CLI (subscription auth)."
                 )
-                use_claude_cli = True
             else:
                 _log.error(
-                    "No backend available: set ANTHROPIC_API_KEY, or install "
-                    "the 'claude' CLI and use --via-claude-cli."
+                    "ANTHROPIC_API_KEY not set and 'claude' CLI not found on PATH. "
+                    "Set ANTHROPIC_API_KEY, or install Claude Code and pass --via-claude-cli."
                 )
-                return 1
+            return 1
         if use_claude_cli:
             if not claude_cli_available():
                 _log.error("--via-claude-cli requested but the 'claude' CLI was not found on PATH")
