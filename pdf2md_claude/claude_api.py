@@ -11,6 +11,7 @@ import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 import anthropic
 
@@ -30,6 +31,16 @@ _RETRY_MAX_DELAY_S = 30
 
 _CACHE_CONTROL = {"type": "ephemeral", "ttl": "1h"}
 """Anthropic prompt-caching control block (1-hour TTL)."""
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Return the backoff delay (with jitter) before retry *attempt* (1-based).
+
+    Exponential and capped: 1, 2, 4, 8, 16, 30, 30, ... seconds, plus up to
+    25% random jitter. Shared by all retry loops in the package.
+    """
+    base = min(_RETRY_MIN_DELAY_S * (2 ** (attempt - 1)), _RETRY_MAX_DELAY_S)
+    return base + random.uniform(0, base * 0.25)
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -65,6 +76,31 @@ class ApiResponse:
     cache_creation_tokens: int
     cache_read_tokens: int
     stop_reason: str
+
+
+@runtime_checkable
+class ApiClient(Protocol):
+    """Structural type implemented by Claude API backends.
+
+    Both :class:`ClaudeApi` (direct Anthropic SDK) and
+    :class:`pdf2md_claude.claude_cli_api.ClaudeCliApi` (``claude`` CLI) satisfy
+    this protocol, so callers should annotate against :class:`ApiClient` rather
+    than a concrete class.
+    """
+
+    @property
+    def model(self) -> ModelConfig: ...
+
+    def cached_block(self, block: dict) -> dict: ...
+
+    def send_message(
+        self,
+        system: str,
+        messages: list[dict],
+        retry_context: str = "",
+        thinking: dict | None = None,
+        on_thinking_delta: Callable[[str], None] | None = None,
+    ) -> ApiResponse: ...
 
 
 class ClaudeApi:
@@ -177,12 +213,7 @@ class ClaudeApi:
             except Exception as e:
                 if not _is_retryable(e) or attempt == self._max_retries:
                     raise
-                # Exponential backoff: 1, 2, 4, 8, 16, 30, 30, ... capped.
-                base = min(
-                    _RETRY_MIN_DELAY_S * (2 ** (attempt - 1)),
-                    _RETRY_MAX_DELAY_S,
-                )
-                delay = base + random.uniform(0, base * 0.25)
+                delay = _backoff_delay(attempt)
                 _log.warning(
                     "API call%s: %s (attempt %d/%d, retrying in %.0fs)",
                     context_str,
