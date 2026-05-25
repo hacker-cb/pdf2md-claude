@@ -872,9 +872,15 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         # typo in ANTHROPIC_API_KEY can't accidentally drain a subscription quota.
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         use_claude_cli = args.via_claude_cli
+        # Resolve and probe the executable once so the printed name and the
+        # availability check agree even if the env changes mid-call. The probe
+        # is `shutil.which`: for a bare name it walks PATH; for a path with a
+        # separator it checks that exact location is an executable file —
+        # hence the "not found (or is not executable)" wording.
         claude_bin = resolve_claude_bin(None)  # honours PDF2MD_CLAUDE_BIN
+        claude_available = claude_cli_available(claude_bin)
         if not use_claude_cli and not api_key:
-            if claude_cli_available():
+            if claude_available:
                 _log.error(
                     "ANTHROPIC_API_KEY not set. Set it to call the Anthropic API, "
                     "or pass --via-claude-cli to route through the local %r "
@@ -883,18 +889,19 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                 )
             else:
                 _log.error(
-                    "ANTHROPIC_API_KEY not set and %r was not found on PATH. "
-                    "Set ANTHROPIC_API_KEY, or install Claude Code (and set "
-                    "PDF2MD_CLAUDE_BIN if your executable has a non-default "
-                    "name/path) and pass --via-claude-cli.",
+                    "ANTHROPIC_API_KEY not set and %r was not found (or is not "
+                    "executable). Set ANTHROPIC_API_KEY, or install Claude Code "
+                    "(and set PDF2MD_CLAUDE_BIN if your executable has a "
+                    "non-default name/path) and pass --via-claude-cli.",
                     claude_bin,
                 )
             return 1
         if use_claude_cli:
-            if not claude_cli_available():
+            if not claude_available:
                 _log.error(
-                    "--via-claude-cli requested but %r was not found on PATH "
-                    "(override via PDF2MD_CLAUDE_BIN)",
+                    "--via-claude-cli requested but %r was not found (or is "
+                    "not executable). Override the executable name/path via "
+                    "PDF2MD_CLAUDE_BIN.",
                     claude_bin,
                 )
                 return 1
