@@ -9,8 +9,16 @@ from __future__ import annotations
 import pytest
 
 import argparse
+import logging
 
-from pdf2md_claude.cli import _build_parser, _resolve_model, main
+from pdf2md_claude.cli import (
+    _API_KEY_ENV,
+    _LEGACY_API_KEY_ENV,
+    _build_parser,
+    _resolve_api_key,
+    _resolve_model,
+    main,
+)
 from pdf2md_claude.models import MODELS
 
 
@@ -326,3 +334,65 @@ class TestInitRulesHandler:
         assert target.exists()
         captured = capsys.readouterr()
         assert "Rules template written" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# API key resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveApiKey:
+    """Env var precedence and deprecation warning in ``_resolve_api_key``."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        """Isolate tests from API keys set in the developer's environment."""
+        monkeypatch.delenv(_API_KEY_ENV, raising=False)
+        monkeypatch.delenv(_LEGACY_API_KEY_ENV, raising=False)
+
+    def _warnings(self, caplog) -> list[str]:
+        return [
+            r.getMessage() for r in caplog.records
+            if r.levelno >= logging.WARNING
+        ]
+
+    def test_primary_var(self, monkeypatch, caplog):
+        monkeypatch.setenv(_API_KEY_ENV, "new-key")
+        with caplog.at_level(logging.WARNING, logger="pdf2md"):
+            assert _resolve_api_key() == ("new-key", _API_KEY_ENV)
+        assert not self._warnings(caplog)
+
+    def test_primary_wins_over_legacy(self, monkeypatch, caplog):
+        monkeypatch.setenv(_API_KEY_ENV, "new-key")
+        monkeypatch.setenv(_LEGACY_API_KEY_ENV, "old-key")
+        with caplog.at_level(logging.WARNING, logger="pdf2md"):
+            assert _resolve_api_key() == ("new-key", _API_KEY_ENV)
+        assert not self._warnings(caplog)
+
+    def test_legacy_fallback_warns(self, monkeypatch, caplog):
+        monkeypatch.setenv(_LEGACY_API_KEY_ENV, "old-key")
+        with caplog.at_level(logging.WARNING, logger="pdf2md"):
+            assert _resolve_api_key() == ("old-key", _LEGACY_API_KEY_ENV)
+        warnings = self._warnings(caplog)
+        assert len(warnings) == 1
+        assert "deprecated" in warnings[0]
+        assert _LEGACY_API_KEY_ENV in warnings[0]
+        assert _API_KEY_ENV in warnings[0]
+
+    def test_legacy_fallback_warning_suppressed(self, monkeypatch, caplog):
+        """``warn_deprecated=False`` (the --via-claude-cli path) stays quiet."""
+        monkeypatch.setenv(_LEGACY_API_KEY_ENV, "old-key")
+        with caplog.at_level(logging.WARNING, logger="pdf2md"):
+            result = _resolve_api_key(warn_deprecated=False)
+        assert result == ("old-key", _LEGACY_API_KEY_ENV)
+        assert not self._warnings(caplog)
+
+    def test_empty_primary_falls_back(self, monkeypatch):
+        """An empty primary var counts as unset, like the falsy check before."""
+        monkeypatch.setenv(_API_KEY_ENV, "")
+        monkeypatch.setenv(_LEGACY_API_KEY_ENV, "old-key")
+        result = _resolve_api_key(warn_deprecated=False)
+        assert result == ("old-key", _LEGACY_API_KEY_ENV)
+
+    def test_neither_set(self):
+        assert _resolve_api_key() == (None, None)

@@ -65,7 +65,7 @@ affect cost and invalidate cached chunks under `.staging/`.
 
 ```bash
 # Set API key
-export ANTHROPIC_API_KEY="your-key-here"
+export PDF2MD_CLAUDE_API_KEY="your-key-here"
 
 # ...or skip the key and route through your local `claude` login instead
 # (subscription auth via Claude Code — see "Backends" below):
@@ -150,7 +150,7 @@ pdf2md-claude init-rules [PATH]             Generate a rules template
   --rules FILE           Custom rules file (replace/append/add rules)
   --via-claude-cli       Run conversion through the local `claude` CLI (`claude -p`)
                          instead of the Anthropic API — uses your Claude Code
-                         login (e.g. a subscription), no ANTHROPIC_API_KEY needed.
+                         login (e.g. a subscription), no PDF2MD_CLAUDE_API_KEY needed.
                          Opt-in only (must be passed explicitly); `--cache` is a
                          no-op in this mode.
   --no-images            Skip image extraction from bounding-box markers
@@ -227,7 +227,7 @@ Use `--show-prompt` to inspect the final merged prompt before converting.
 
 | Backend | When used | Auth |
 |---|---|---|
-| Anthropic API (default) | `ANTHROPIC_API_KEY` is set | API key (`x-api-key`) |
+| Anthropic API (default) | `PDF2MD_CLAUDE_API_KEY` is set (legacy `ANTHROPIC_API_KEY` also honored) | API key (`x-api-key`) |
 | `claude` CLI (`claude -p`) | `--via-claude-cli` passed explicitly (no silent auto-fallback) | Whatever `claude` is logged in with (e.g. a Claude subscription) |
 
 The CLI backend shells out to a locally installed
@@ -247,7 +247,8 @@ direct path). Differences to note:
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key. Required unless using the `claude` CLI backend (`--via-claude-cli`). |
+| `PDF2MD_CLAUDE_API_KEY` | Anthropic API key. Required unless using the `claude` CLI backend (`--via-claude-cli`). |
+| `ANTHROPIC_API_KEY` | Deprecated fallback for `PDF2MD_CLAUDE_API_KEY` (logs a warning when used; the new variable takes precedence). |
 | `PDF2MD_CLAUDE_BIN` | Name/path of the `claude` executable for the CLI backend (default: `claude`). |
 
 ## File Structure

@@ -1,7 +1,7 @@
 """Claude CLI backend — run conversions through the ``claude -p`` headless mode.
 
 This is an alternative to :class:`pdf2md_claude.claude_api.ClaudeApi` that does
-not need an ``ANTHROPIC_API_KEY``.  Instead it shells out to a locally installed
+not need an API key (``PDF2MD_CLAUDE_API_KEY``).  Instead it shells out to a locally installed
 `Claude Code <https://claude.com/claude-code>`_ CLI in non-interactive print
 mode, which authenticates with whatever credentials ``claude`` already uses
 (typically a Claude subscription via OAuth).
