@@ -1,7 +1,8 @@
 """Claude CLI backend — run conversions through the ``claude -p`` headless mode.
 
-This is an alternative to :class:`pdf2md_claude.claude_api.ClaudeApi` that does
-not need an API key (``PDF2MD_CLAUDE_API_KEY``).  Instead it shells out to a locally installed
+This is an alternative to :class:`pdf2md_claude.claude_api.ClaudeApi` that
+does not need ``PDF2MD_CLAUDE_API_KEY`` (or the legacy ``ANTHROPIC_API_KEY``).
+Instead it shells out to a locally installed
 `Claude Code <https://claude.com/claude-code>`_ CLI in non-interactive print
 mode, which authenticates with whatever credentials ``claude`` already uses
 (typically a Claude subscription via OAuth).
@@ -43,7 +44,7 @@ from pdf2md_claude.models import ModelConfig
 
 _log = logging.getLogger("claude_cli")
 
-_CLAUDE_BIN_ENV = "PDF2MD_CLAUDE_BIN"
+CLAUDE_BIN_ENV = "PDF2MD_CLAUDE_BIN"
 """Env var overriding the name/path of the Claude Code executable."""
 
 _DEFAULT_TIMEOUT_S = 1800
@@ -58,7 +59,7 @@ _RETRYABLE_API_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
 
 def resolve_claude_bin(claude_bin: str | None) -> str:
     """Resolve the Claude executable: explicit arg, then env var, then ``claude``."""
-    return claude_bin or os.environ.get(_CLAUDE_BIN_ENV) or "claude"
+    return claude_bin or os.environ.get(CLAUDE_BIN_ENV) or "claude"
 
 
 def claude_cli_available(claude_bin: str | None = None) -> bool:
@@ -126,7 +127,7 @@ class ClaudeCliApi:
         if not claude_cli_available(self._claude_bin):
             raise RuntimeError(
                 f"Claude CLI executable {self._claude_bin!r} not found on PATH. "
-                f"Install Claude Code or set {_CLAUDE_BIN_ENV}."
+                f"Install Claude Code or set {CLAUDE_BIN_ENV}."
             )
 
     @property

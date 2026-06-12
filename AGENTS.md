@@ -59,10 +59,10 @@ Unit tests (no API key needed):
 ./.venv/bin/python -m pytest tests/ -v
 ```
 
-End-to-end with sample PDF (requires `PDF2MD_CLAUDE_API_KEY` — legacy
-`ANTHROPIC_API_KEY` also works but logs a deprecation warning — or pass
-`--via-claude-cli` to route through a locally logged-in `claude` CLI instead —
-no key needed):
+End-to-end with sample PDF (requires `PDF2MD_CLAUDE_API_KEY`; the legacy
+`ANTHROPIC_API_KEY` also works but logs a deprecation warning). Alternatively,
+pass `--via-claude-cli` to route through a locally logged-in `claude` CLI —
+that backend needs no key:
 
 ```bash
 # Fresh conversion (4-page sample, 1 page/chunk = 4 API calls)

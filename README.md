@@ -242,6 +242,9 @@ direct path). Differences to note:
 - Token counts in the cost report come from the CLI; on a document's first
   call most input tokens show up as cache-creation tokens.
 - Override the executable with `PDF2MD_CLAUDE_BIN` if `claude` isn't on PATH.
+- The spawned `claude` inherits your environment: if `ANTHROPIC_API_KEY` is
+  exported, Claude Code may pick it up and bill that API key instead of your
+  subscription login. Unset it for the run if that is not what you want.
 
 ## Environment
 
