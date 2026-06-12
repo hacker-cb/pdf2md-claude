@@ -23,11 +23,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-import anthropic
 import colorlog
 
 from pdf2md_claude import __version__
-from pdf2md_claude.claude_cli_api import claude_cli_available, resolve_claude_bin
+from pdf2md_claude.claude_cli_api import (
+    CLAUDE_BIN_ENV,
+    claude_cli_available,
+    resolve_claude_bin,
+)
 from pdf2md_claude.converter import DEFAULT_PAGES_PER_CHUNK
 from pdf2md_claude.images import ImageMode
 from pdf2md_claude.models import MODELS, ModelConfig, DocumentUsageStats, format_summary
@@ -46,6 +49,35 @@ _log = logging.getLogger("pdf2md")
 
 DEFAULT_MODEL_ALIAS = "opus"
 """Short alias for the default model (key into ``MODELS`` dict)."""
+
+_API_KEY_ENV = "PDF2MD_CLAUDE_API_KEY"
+"""Primary env var for the Anthropic API key (project-specific)."""
+
+_LEGACY_API_KEY_ENV = "ANTHROPIC_API_KEY"
+"""Deprecated fallback for ``_API_KEY_ENV``; using it logs a warning."""
+
+
+def _resolve_api_key() -> tuple[str | None, str | None]:
+    """Resolve the API key: ``PDF2MD_CLAUDE_API_KEY`` first, then ``ANTHROPIC_API_KEY``.
+
+    Returns ``(key, name of the env var it came from)``, or ``(None, None)``
+    if neither is set (empty values count as unset). Falling back to the
+    legacy var logs a deprecation warning, so call this only when the key
+    will actually be used as the backend credential.
+    """
+    key = os.environ.get(_API_KEY_ENV)
+    if key:
+        return key, _API_KEY_ENV
+    key = os.environ.get(_LEGACY_API_KEY_ENV)
+    if key:
+        _log.warning(
+            "%s is deprecated for pdf2md-claude; set %s instead "
+            "(it takes precedence and avoids clashes with other "
+            "tools' keys).",
+            _LEGACY_API_KEY_ENV, _API_KEY_ENV,
+        )
+        return key, _LEGACY_API_KEY_ENV
+    return None, None
 
 
 def _resolve_model(value: str) -> str:
@@ -264,7 +296,8 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  convert       Convert PDF documents to Markdown (requires ANTHROPIC_API_KEY)
+  convert       Convert PDF documents to Markdown
+                (requires PDF2MD_CLAUDE_API_KEY, or --via-claude-cli)
   validate      Validate converted output (no API key needed)
   show-prompt   Print the system prompt to stdout
   init-rules    Generate a rules template file
@@ -379,7 +412,7 @@ Examples:
         help="Run conversion through the local 'claude' CLI in headless mode "
              "(claude -p) instead of calling the Anthropic API directly. "
              "Uses whatever credentials 'claude' is logged in with (e.g. a "
-             "Claude subscription), so ANTHROPIC_API_KEY is not required. "
+             "Claude subscription), so PDF2MD_CLAUDE_API_KEY is not required. "
              "Note: --cache is a no-op in this mode (Claude Code manages "
              "prompt caching itself).",
     )
@@ -866,12 +899,17 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         if args.from_step:
             _log.info("Starting from: %s (skips chunk conversion; post-processing may still call API)", args.from_step)
 
-        # Decide backend: direct Anthropic API (needs ANTHROPIC_API_KEY) or
-        # the local `claude` CLI (subscription auth, opt-in via --via-claude-cli).
+        # Decide backend: direct Anthropic API (needs PDF2MD_CLAUDE_API_KEY,
+        # legacy ANTHROPIC_API_KEY honoured with a deprecation warning) or the
+        # local `claude` CLI (subscription auth, opt-in via --via-claude-cli).
         # Selection is always explicit — there is no silent auto-fallback, so a
-        # typo in ANTHROPIC_API_KEY can't accidentally drain a subscription quota.
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        # typo in the key env var can't accidentally drain a subscription quota.
         use_claude_cli = args.via_claude_cli
+        # Resolve the key only when it will be used: with --via-claude-cli the
+        # key is ignored, and the legacy-var deprecation warning would be noise.
+        api_key = api_key_env = None
+        if not use_claude_cli:
+            api_key, api_key_env = _resolve_api_key()
         # Resolve and probe the executable once so the printed name and the
         # availability check agree even if the env changes mid-call. The probe
         # is `shutil.which`: for a bare name it walks PATH; for a path with a
@@ -882,18 +920,18 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         if not use_claude_cli and not api_key:
             if claude_available:
                 _log.error(
-                    "ANTHROPIC_API_KEY not set. Set it to call the Anthropic API, "
+                    "%s not set. Set it to call the Anthropic API, "
                     "or pass --via-claude-cli to route through the local %r "
                     "(subscription auth).",
-                    claude_bin,
+                    _API_KEY_ENV, claude_bin,
                 )
             else:
                 _log.error(
-                    "ANTHROPIC_API_KEY not set and %r was not found (or is not "
-                    "executable). Set ANTHROPIC_API_KEY, or install Claude Code "
-                    "(and set PDF2MD_CLAUDE_BIN if your executable has a "
+                    "%s not set and %r was not found (or is not "
+                    "executable). Set %s, or install Claude Code "
+                    "(and set %s if your executable has a "
                     "non-default name/path) and pass --via-claude-cli.",
-                    claude_bin,
+                    _API_KEY_ENV, claude_bin, _API_KEY_ENV, CLAUDE_BIN_ENV,
                 )
             return 1
         if use_claude_cli:
@@ -901,15 +939,15 @@ def _cmd_convert(args: argparse.Namespace) -> int:
                 _log.error(
                     "--via-claude-cli requested but %r was not found (or is "
                     "not executable). Override the executable name/path via "
-                    "PDF2MD_CLAUDE_BIN.",
-                    claude_bin,
+                    "%s.",
+                    claude_bin, CLAUDE_BIN_ENV,
                 )
                 return 1
             _log.info("Backend: claude CLI (headless 'claude -p')")
             if args.cache:
                 _log.info("Note: --cache has no effect with the claude CLI backend")
         else:
-            _log.info("Backend: Anthropic API (ANTHROPIC_API_KEY)")
+            _log.info("Backend: Anthropic API (%s)", api_key_env)
             if args.cache:
                 _log.info("Prompt caching: ENABLED (1h TTL)")
 

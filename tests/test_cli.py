@@ -9,8 +9,16 @@ from __future__ import annotations
 import pytest
 
 import argparse
+import logging
 
-from pdf2md_claude.cli import _build_parser, _resolve_model, main
+from pdf2md_claude.cli import (
+    _API_KEY_ENV,
+    _LEGACY_API_KEY_ENV,
+    _build_parser,
+    _resolve_api_key,
+    _resolve_model,
+    main,
+)
 from pdf2md_claude.models import MODELS
 
 
@@ -326,3 +334,83 @@ class TestInitRulesHandler:
         assert target.exists()
         captured = capsys.readouterr()
         assert "Rules template written" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# API key resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveApiKey:
+    """Env var precedence and deprecation warning in ``_resolve_api_key``."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        """Isolate tests from API keys set in the developer's environment."""
+        monkeypatch.delenv(_API_KEY_ENV, raising=False)
+        monkeypatch.delenv(_LEGACY_API_KEY_ENV, raising=False)
+
+    def test_primary_var(self, monkeypatch, caplog):
+        monkeypatch.setenv(_API_KEY_ENV, "new-key")
+        with caplog.at_level(logging.WARNING, logger="pdf2md"):
+            assert _resolve_api_key() == ("new-key", _API_KEY_ENV)
+        assert not caplog.records
+
+    def test_primary_wins_over_legacy(self, monkeypatch, caplog):
+        monkeypatch.setenv(_API_KEY_ENV, "new-key")
+        monkeypatch.setenv(_LEGACY_API_KEY_ENV, "old-key")
+        with caplog.at_level(logging.WARNING, logger="pdf2md"):
+            assert _resolve_api_key() == ("new-key", _API_KEY_ENV)
+        assert not caplog.records
+
+    def test_legacy_fallback_warns(self, monkeypatch, caplog):
+        monkeypatch.setenv(_LEGACY_API_KEY_ENV, "old-key")
+        with caplog.at_level(logging.WARNING, logger="pdf2md"):
+            assert _resolve_api_key() == ("old-key", _LEGACY_API_KEY_ENV)
+        assert len(caplog.records) == 1
+        assert "deprecated" in caplog.text
+        assert _LEGACY_API_KEY_ENV in caplog.text
+        assert _API_KEY_ENV in caplog.text
+
+    def test_empty_primary_falls_back(self, monkeypatch):
+        """An empty primary var counts as unset, like the falsy check before."""
+        monkeypatch.setenv(_API_KEY_ENV, "")
+        monkeypatch.setenv(_LEGACY_API_KEY_ENV, "old-key")
+        assert _resolve_api_key() == ("old-key", _LEGACY_API_KEY_ENV)
+
+    def test_neither_set(self):
+        assert _resolve_api_key() == (None, None)
+
+
+class TestConvertBackendSelection:
+    """Smoke-test the convert handler's backend gate (no API calls)."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        """Isolate tests from API keys set in the developer's environment."""
+        monkeypatch.delenv(_API_KEY_ENV, raising=False)
+        monkeypatch.delenv(_LEGACY_API_KEY_ENV, raising=False)
+
+    def test_no_key_errors_with_primary_var_name(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"")
+        monkeypatch.setattr("sys.argv", ["pdf2md-claude", "convert", str(pdf)])
+        assert main() == 1
+        assert f"{_API_KEY_ENV} not set" in capsys.readouterr().err
+
+    def test_legacy_key_warns_and_names_backend(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        """The legacy key reaches the backend log line and warns once."""
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"")
+        monkeypatch.setenv(_LEGACY_API_KEY_ENV, "fake-key")
+        monkeypatch.setattr("sys.argv", ["pdf2md-claude", "convert", str(pdf)])
+        # Fails later on the empty PDF (no API call is ever made); the
+        # backend decision lines are logged before that.
+        assert main() == 1
+        err = capsys.readouterr().err
+        assert "deprecated" in err
+        assert f"Backend: Anthropic API ({_LEGACY_API_KEY_ENV})" in err
